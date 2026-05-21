@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en-NZ">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1a2b" />
+  <title>Ribice — NZ marine forecast</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icons/icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
+        <!-- Sun -->
+        <circle cx="16" cy="14" r="7.5" fill="#ffd47a"/>
+        <!-- Chamois silhouette -->
+        <path d="M11 9.5 C10.4 8.4 10 7.4 9.4 6.6 C9.2 6.3 9.4 6 9.7 6.1 C10.7 6.6 11.6 7.7 12.2 9.3 Z" fill="#ffc24a" stroke="#8a5a0a" stroke-width="0.3"/>
+        <path d="M21 9.5 C21.6 8.4 22 7.4 22.6 6.6 C22.8 6.3 22.6 6 22.3 6.1 C21.3 6.6 20.4 7.7 19.8 9.3 Z" fill="#ffc24a" stroke="#8a5a0a" stroke-width="0.3"/>
+        <path d="M16 10 C14 10 12.8 11.8 12.8 13.8 C12.8 15.8 13.6 17.6 16 18.5 C18.4 17.6 19.2 15.8 19.2 13.8 C19.2 11.8 18 10 16 10 Z" fill="#1a242f"/>
+        <ellipse cx="14.5" cy="13.5" rx="0.6" ry="0.9" fill="#fff1c2"/>
+        <ellipse cx="17.5" cy="13.5" rx="0.6" ry="0.9" fill="#fff1c2"/>
+        <!-- Waves -->
+        <path d="M2 22 C5 20.5 8 22 11 20.5 C14 22 17 20.5 20 22 C23 20.5 26 22 30 20.5" stroke="#7cc4e8" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+        <path d="M2 26 C5 24.5 8 26 11 24.5 C14 26 17 24.5 20 26 C23 24.5 26 26 30 24.5" stroke="#7cc4e8" stroke-width="1.4" fill="none" stroke-linecap="round" opacity="0.6"/>
+      </svg>
+      <span>Ribice</span>
+      <span id="versionPill" class="version-pill" title="App version">—</span>
+    </div>
+    <button id="settingsBtn" class="icon-btn" aria-label="Settings">
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+        <path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 5.5l-2.1-.6a7.6 7.6 0 00-.6-1.5l1.1-1.9a.5.5 0 00-.1-.6l-1.6-1.6a.5.5 0 00-.6-.1l-1.9 1.1a7.6 7.6 0 00-1.5-.6L13.5 5.6a.5.5 0 00-.5-.4h-2.2a.5.5 0 00-.5.4l-.6 2.1a7.6 7.6 0 00-1.5.6L6.3 7.2a.5.5 0 00-.6.1L4.1 8.9a.5.5 0 00-.1.6l1.1 1.9a7.6 7.6 0 00-.6 1.5l-2.1.6a.5.5 0 00-.4.5v2.2c0 .2.2.4.4.5l2.1.6c.2.5.4 1 .6 1.5L4 20.6a.5.5 0 00.1.6l1.6 1.6c.2.2.4.2.6.1l1.9-1.1c.5.2 1 .4 1.5.6l.6 2.1c0 .2.2.4.5.4h2.2c.2 0 .4-.2.5-.4l.6-2.1c.5-.2 1-.4 1.5-.6l1.9 1.1c.2.1.4.1.6-.1l1.6-1.6c.2-.2.2-.4.1-.6l-1.1-1.9c.2-.5.4-1 .6-1.5l2.1-.6c.2 0 .4-.3.4-.5v-2.2a.5.5 0 00-.4-.5z" fill="#cfe4f5"/>
+      </svg>
+    </button>
+  </header>
+
+  <nav id="spotPicker" class="spot-picker" aria-label="Locations"></nav>
+
+  <main id="app">
+    <section class="card hero">
+      <div class="hero-head">
+        <h1 id="spotName">Loading…</h1>
+        <span id="spotMeta" class="meta"></span>
+      </div>
+      <div class="verdict" id="verdict">
+        <div class="verdict-light" data-state="grey"></div>
+        <div class="verdict-text">
+          <strong id="verdictHeadline">Reading the sky…</strong>
+          <span id="verdictDetail">Pulling 5 weather models, marine + tide data.</span>
+        </div>
+      </div>
+      <div class="stats-row" id="nowStats"></div>
+    </section>
+
+    <section class="card" id="warningsCard">
+      <h2>Marine warnings <span class="muted small" id="warningsHeadline"></span></h2>
+      <div id="warningsBody"></div>
+      <p class="muted small" style="margin: 8px 0 0;">
+        Forecast-derived from <a href="https://www.metservice.com/marine/warnings" target="_blank" rel="noopener">MetService Marine</a> thresholds — always check the official page before going out.
+      </p>
+    </section>
+
+    <section class="card bite-card">
+      <h2>Bite times today <span class="muted small" id="biteHeadline"></span></h2>
+      <div class="bite-grid" id="biteToday"></div>
+      <details class="bite-note">
+        <summary class="muted small">Why don't sites always agree?</summary>
+        <p class="muted small">
+          Sites use different lunar maths and different window widths — some use 1h minors, some 3h, some 2h. Major windows ≈ moon overhead / underfoot; minors ≈ moonrise / moonset. Major-window centres usually agree to within a few minutes across sources; the windows just get drawn wider or narrower. If a day really matters, cross-check with <a href="https://www.solunar.org/" target="_blank" rel="noopener">Solunar.org</a> or <a href="https://www.thefishingwebsite.com/bite-times/" target="_blank" rel="noopener">The Fishing Website</a>.
+        </p>
+      </details>
+    </section>
+
+    <section class="card">
+      <h2>Best day this week <span class="muted small" id="bestDayHeadline"></span></h2>
+      <div class="best-list" id="bestDayList"></div>
+    </section>
+
+    <section class="card">
+      <h2>Next 48 hours <span class="muted" id="hourlyAgreement"></span></h2>
+      <div class="hourly-scroll" id="hourly"></div>
+    </section>
+
+    <section class="card">
+      <h2>7-day outlook</h2>
+      <div class="daily" id="daily"></div>
+    </section>
+
+    <section class="card">
+      <h2>Tides today</h2>
+      <div class="tide-wrap">
+        <svg id="tideChart" viewBox="0 0 320 120" preserveAspectRatio="none" aria-label="Tide chart"></svg>
+        <div class="tide-events" id="tideEvents"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Fishing intel <span class="muted small" id="fishingHeadline"></span></h2>
+      <div class="swell" id="fishingIntel"></div>
+      <div class="fishing-windows" id="fishingWindows"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sea temperature <span class="muted small" id="sstHeadline"></span></h2>
+      <div class="sst-wrap">
+        <svg id="sstChart" viewBox="0 0 320 140" preserveAspectRatio="none" aria-label="Sea temperature chart"></svg>
+        <div class="sst-legend" id="sstLegend"></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Wind &amp; gusts <span class="muted small" id="windHeadline"></span></h2>
+      <div class="swell" id="windDetail"></div>
+      <div class="wind-shift" id="windShift"></div>
+    </section>
+
+    <section class="card">
+      <h2>Swell &amp; sea state</h2>
+      <div class="swell" id="swell"></div>
+    </section>
+
+    <section class="card">
+      <h2>Cross-check this spot</h2>
+      <p class="muted small">No public API for these — tap to open their forecast for the active spot.</p>
+      <div class="xlinks" id="xlinks"></div>
+    </section>
+
+    <section class="card">
+      <h2>Solunar &amp; sky</h2>
+      <div class="solunar" id="solunar"></div>
+    </section>
+
+    <section class="card">
+      <h2>Model agreement</h2>
+      <p class="muted small">Average of five independent global weather models — ECMWF (Europe), GFS (NOAA US), ICON (Germany), GEM (Canada), BoM ACCESS-G (Australia, best for NZ region). Wider bars mean the models disagree.</p>
+      <div id="agreement"></div>
+    </section>
+
+    <p class="footer-note">
+      All data: <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · free, no API keys.
+      Always cross-check with <a href="https://www.metservice.com/marine/" target="_blank" rel="noopener">MetService Marine</a> before heading out.
+    </p>
+  </main>
+
+  <dialog id="settingsDialog" class="settings">
+    <form method="dialog">
+      <h2>Your thresholds</h2>
+      <p class="muted small">The verdict light turns green when forecast values stay under all of these limits during daylight hours.</p>
+
+      <label>Max wind (knots) <input type="number" id="thMaxWind" min="0" max="60" step="1"/></label>
+      <label>Max gust (knots) <input type="number" id="thMaxGust" min="0" max="80" step="1"/></label>
+      <label>Max significant wave height (m) <input type="number" id="thMaxSwell" min="0" max="6" step="0.1"/></label>
+      <label>Max rain in hour (mm) <input type="number" id="thMaxRain" min="0" max="20" step="0.5"/></label>
+      <label>Min temperature (°C) <input type="number" id="thMinTemp" min="-5" max="30" step="1"/></label>
+
+      <h3>Units</h3>
+      <label>Wind: <select id="unitWind"><option value="kt">knots</option><option value="kmh">km/h</option><option value="ms">m/s</option></select></label>
+      <label>Waves: <select id="unitWave"><option value="m">metres</option><option value="ft">feet</option></select></label>
+      <label>Temp: <select id="unitTemp"><option value="c">°C</option><option value="f">°F</option></select></label>
+
+      <h3>Spots</h3>
+      <div id="spotList" class="spot-list"></div>
+      <details>
+        <summary>Add a spot</summary>
+        <div class="search-spot">
+          <input type="search" id="placeSearch" placeholder="Search NZ (e.g. Cape Brett, Tairua)" autocomplete="off"/>
+          <button type="button" id="searchBtn">Search</button>
+        </div>
+        <div id="searchResults" class="search-results"></div>
+
+        <p class="muted small" style="margin: 14px 0 4px;">Or add manually:</p>
+        <div class="add-spot">
+          <input type="text" id="newSpotName" placeholder="Name"/>
+          <input type="number" id="newSpotLat" placeholder="Lat" step="0.0001"/>
+          <input type="number" id="newSpotLon" placeholder="Lon" step="0.0001"/>
+          <button type="button" id="addSpotBtn">Add</button>
+        </div>
+        <a href="#" target="_blank" rel="noopener" id="openMapsLink" class="open-maps-link">📍 Open Google Maps — long-press on a spot to copy its coords</a>
+      </details>
+
+      <h3>App version</h3>
+      <p class="muted small" style="margin: 0 0 6px;">Running: <strong id="appVersionLabel" style="color: var(--ink); font-family: monospace;">—</strong></p>
+      <button type="button" id="forceUpdateBtn" class="ghost danger-btn">Force update &amp; reload</button>
+      <p class="muted small">Wipes the cached app shell and pulls everything fresh. Use this if Android is stuck on an old version after a deploy.</p>
+
+      <menu>
+        <button type="button" id="resetBtn" class="ghost">Reset to defaults</button>
+        <button value="save" id="saveBtn">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

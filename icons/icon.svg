@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a3a5c"/>
+      <stop offset="1" stop-color="#0b1a2b"/>
+    </linearGradient>
+    <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#fff1c2"/>
+      <stop offset="0.55" stop-color="#ffd47a"/>
+      <stop offset="1" stop-color="#ffb24a"/>
+    </radialGradient>
+    <linearGradient id="sea" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d7faa"/>
+      <stop offset="1" stop-color="#0f3a5a"/>
+    </linearGradient>
+    <linearGradient id="horn" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe48a"/>
+      <stop offset="0.5" stop-color="#ffc24a"/>
+      <stop offset="1" stop-color="#c98a14"/>
+    </linearGradient>
+    <linearGradient id="chamois" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a3a48"/>
+      <stop offset="1" stop-color="#0e1620"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded app background -->
+  <rect width="512" height="512" rx="96" fill="url(#sky)"/>
+
+  <!-- Sun -->
+  <circle cx="256" cy="240" r="120" fill="url(#sun)"/>
+  <!-- Sun rays (subtle) -->
+  <g stroke="#ffd47a" stroke-width="3" opacity="0.35" stroke-linecap="round">
+    <line x1="256" y1="80"  x2="256" y2="110"/>
+    <line x1="256" y1="370" x2="256" y2="400"/>
+    <line x1="96"  y1="240" x2="126" y2="240"/>
+    <line x1="386" y1="240" x2="416" y2="240"/>
+    <line x1="143" y1="127" x2="164" y2="148"/>
+    <line x1="348" y1="332" x2="369" y2="353"/>
+    <line x1="369" y1="127" x2="348" y2="148"/>
+    <line x1="164" y1="332" x2="143" y2="353"/>
+  </g>
+
+  <!-- Chamois (Zlatorog) silhouette: head + neck, facing forward-left -->
+  <g transform="translate(0,0)">
+    <!-- Horns: two curved, swept-back golden horns -->
+    <path d="M 238 152
+             C 232 130, 224 110, 214 96
+             C 210 92, 212 86, 218 88
+             C 234 96, 248 116, 256 142
+             Z"
+          fill="url(#horn)" stroke="#8a5a0a" stroke-width="1.5"/>
+    <path d="M 274 152
+             C 280 130, 288 110, 298 96
+             C 302 92, 300 86, 294 88
+             C 278 96, 264 116, 256 142
+             Z"
+          fill="url(#horn)" stroke="#8a5a0a" stroke-width="1.5"/>
+    <!-- Horn ridges -->
+    <g stroke="#8a5a0a" stroke-width="1" opacity="0.55" fill="none">
+      <path d="M 228 110 C 232 115, 238 122, 244 130"/>
+      <path d="M 222 124 C 228 128, 234 134, 240 142"/>
+      <path d="M 284 110 C 280 115, 274 122, 268 130"/>
+      <path d="M 290 124 C 284 128, 278 134, 272 142"/>
+    </g>
+
+    <!-- Head: rounded triangle, slight forward tilt -->
+    <path d="M 256 158
+             C 226 158, 208 188, 208 220
+             C 208 252, 220 282, 256 296
+             C 292 282, 304 252, 304 220
+             C 304 188, 286 158, 256 158 Z"
+          fill="url(#chamois)"/>
+    <!-- Ears -->
+    <path d="M 214 178 C 206 174, 200 180, 204 192 C 208 198, 214 200, 218 196 Z" fill="#1a242f"/>
+    <path d="M 298 178 C 306 174, 312 180, 308 192 C 304 198, 298 200, 294 196 Z" fill="#1a242f"/>
+
+    <!-- Snout / muzzle -->
+    <path d="M 240 256
+             C 240 244, 272 244, 272 256
+             C 272 270, 264 282, 256 286
+             C 248 282, 240 270, 240 256 Z"
+          fill="#1a242f"/>
+    <ellipse cx="256" cy="262" rx="6" ry="4" fill="#0a1018"/>
+
+    <!-- Eye highlights -->
+    <ellipse cx="234" cy="212" rx="4" ry="6" fill="#fff1c2"/>
+    <ellipse cx="278" cy="212" rx="4" ry="6" fill="#fff1c2"/>
+    <ellipse cx="234" cy="214" rx="2" ry="3" fill="#0a1018"/>
+    <ellipse cx="278" cy="214" rx="2" ry="3" fill="#0a1018"/>
+
+    <!-- White cheek stripe (chamois marking) -->
+    <path d="M 226 232 C 228 244, 232 254, 240 262"
+          stroke="#e8eef5" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.8"/>
+    <path d="M 286 232 C 284 244, 280 254, 272 262"
+          stroke="#e8eef5" stroke-width="3" fill="none" stroke-linecap="round" opacity="0.8"/>
+
+    <!-- Neck/shoulders blending into waves -->
+    <path d="M 196 296
+             C 200 320, 212 332, 228 338
+             L 284 338
+             C 300 332, 312 320, 316 296
+             C 300 304, 288 308, 256 308
+             C 224 308, 212 304, 196 296 Z"
+          fill="url(#chamois)"/>
+  </g>
+
+  <!-- Sea waves at base -->
+  <path d="M 0 360 Q 64 330 128 360 T 256 360 T 384 360 T 512 360 L 512 512 L 0 512 Z" fill="url(#sea)"/>
+  <path d="M 0 396 Q 64 378 128 396 T 256 396 T 384 396 T 512 396" fill="none" stroke="#a8d4ec" stroke-width="5" opacity="0.55"/>
+  <path d="M 0 436 Q 64 420 128 436 T 256 436 T 384 436 T 512 436" fill="none" stroke="#a8d4ec" stroke-width="4" opacity="0.35"/>
+</svg>

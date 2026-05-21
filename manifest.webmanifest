@@ -1,0 +1,19 @@
+{
+  "name": "Ribice — NZ marine forecast",
+  "short_name": "Ribice",
+  "description": "Aggregated weather, swell, tide and solunar forecasts for Auckland boating & fishing.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b1a2b",
+  "theme_color": "#0b1a2b",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

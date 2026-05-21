@@ -1,0 +1,2399 @@
+// Ribice — aggregated marine forecast PWA
+// All data: Open-Meteo (free, no API keys).
+
+// Bump on every shippable change. Visible in the topbar pill AND in
+// Settings → App version, so you can instantly tell whether the phone is
+// running the latest deploy.
+const APP_VERSION = "2026.05.22-1";
+const LOADED_AT = new Date();
+
+// Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
+console.log(
+  `%c⚓ Ribice %cv${APP_VERSION} %cloaded at ${LOADED_AT.toLocaleString("en-NZ")}`,
+  "color:#7cc4e8;font-weight:bold;font-size:14px",
+  "color:#ffd47a;font-weight:bold",
+  "color:#7c97ad"
+);
+
+// ---------- Constants ----------
+
+const DEFAULT_SPOTS = [
+  { id: "wai", name: "Auckland (Waitemata)",      lat: -36.836, lon: 174.800 },
+  { id: "rng", name: "Rangitoto Channel",         lat: -36.790, lon: 174.840 },
+  { id: "brn", name: "Browns Island (Motukorea)", lat: -36.830, lon: 174.890 },
+  { id: "mot", name: "Motuihe Channel",           lat: -36.800, lon: 174.940 },
+  { id: "rak", name: "Rakino",                    lat: -36.720, lon: 174.940 },
+  { id: "noi", name: "Noises",                    lat: -36.690, lon: 174.970 },
+  { id: "whk", name: "Waiheke (Onetangi)",        lat: -36.785, lon: 175.095 },
+  { id: "tir", name: "Tiri Channel",              lat: -36.600, lon: 174.850 },
+  { id: "wha", name: "Whangaparaoa",              lat: -36.610, lon: 174.780 },
+  { id: "crm", name: "Coromandel Town",           lat: -36.762, lon: 175.495 },
+  { id: "gbi", name: "Great Barrier (Tryphena)",  lat: -36.301, lon: 175.483 }
+];
+
+// Bump this when DEFAULT_SPOTS gains new entries that existing users should see.
+const SPOTS_VERSION = 2;
+
+const DEFAULT_THRESHOLDS = {
+  maxWindKt: 15,
+  maxGustKt: 22,
+  maxWaveM: 1.2,
+  maxRainMm: 1,
+  minTempC: 12
+};
+
+const DEFAULT_UNITS = { wind: "kt", wave: "m", temp: "c" };
+
+// Five independent global weather models. Open-Meteo serves them all from one
+// endpoint when you pass `models=` as a comma-separated list.
+const WEATHER_MODELS = [
+  "ecmwf_ifs025",
+  "gfs_seamless",
+  "icon_seamless",
+  "gem_seamless",
+  "bom_access_global"
+];
+
+const MODEL_LABELS = {
+  "ecmwf_ifs025": "ECMWF",
+  "gfs_seamless": "GFS",
+  "icon_seamless": "ICON",
+  "gem_seamless": "GEM",
+  "bom_access_global": "ACCESS-G"
+};
+
+const WEATHER_VARS = [
+  "temperature_2m",
+  "precipitation",
+  "wind_speed_10m",
+  "wind_gusts_10m",
+  "wind_direction_10m",
+  "cloud_cover",
+  "pressure_msl",
+  "relative_humidity_2m",
+  "weather_code"
+];
+
+const MARINE_VARS = [
+  "wave_height",
+  "wave_period",
+  "wave_direction",
+  "wind_wave_height",
+  "swell_wave_height",
+  "swell_wave_period",
+  "swell_wave_direction",
+  "sea_level_height_msl",
+  "sea_surface_temperature"
+];
+
+const DAILY_VARS = [
+  "temperature_2m_max",
+  "temperature_2m_min",
+  "precipitation_sum",
+  "wind_speed_10m_max",
+  "wind_gusts_10m_max",
+  "uv_index_max",
+  "sunrise",
+  "sunset",
+  "weather_code"
+];
+
+// ---------- State ----------
+
+const state = {
+  spots: loadJSON("spots", DEFAULT_SPOTS),
+  thresholds: loadJSON("thresholds", DEFAULT_THRESHOLDS),
+  units: loadJSON("units", DEFAULT_UNITS),
+  activeSpotId: loadJSON("activeSpotId", DEFAULT_SPOTS[0].id),
+  data: null
+};
+
+// One-time migration: add any new DEFAULT_SPOTS that the user doesn't have yet.
+(function migrateSpots() {
+  const storedVer = +(localStorage.getItem("ts.spotsVersion") || 1);
+  if (storedVer >= SPOTS_VERSION) return;
+  const have = new Set(state.spots.map((s) => s.id));
+  for (const s of DEFAULT_SPOTS) {
+    if (!have.has(s.id)) state.spots.push(s);
+  }
+  saveJSON("spots", state.spots);
+  localStorage.setItem("ts.spotsVersion", SPOTS_VERSION);
+})();
+
+// ---------- Utilities ----------
+
+function loadJSON(key, fallback) {
+  try {
+    const raw = localStorage.getItem("ts." + key);
+    if (!raw) return structuredClone(fallback);
+    return JSON.parse(raw);
+  } catch { return structuredClone(fallback); }
+}
+function saveJSON(key, value) {
+  localStorage.setItem("ts." + key, JSON.stringify(value));
+}
+
+function $(sel) { return document.querySelector(sel); }
+function el(tag, attrs = {}, children = []) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else if (k.startsWith("on") && typeof v === "function") e.addEventListener(k.slice(2), v);
+    else e.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) {
+    if (c == null) continue;
+    e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  }
+  return e;
+}
+
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toast._tid);
+  toast._tid = setTimeout(() => (t.hidden = true), 2400);
+}
+
+// Unit conversion
+const KMH_TO_KT = 0.539957;
+const MS_TO_KT  = 1.94384;
+const M_TO_FT   = 3.28084;
+
+function fmtWind(kmh) {
+  if (kmh == null) return "—";
+  if (state.units.wind === "kt") return Math.round(kmh * KMH_TO_KT) + " kt";
+  if (state.units.wind === "ms") return (kmh / 3.6).toFixed(1) + " m/s";
+  return Math.round(kmh) + " km/h";
+}
+function fmtWave(m) {
+  if (m == null) return "—";
+  if (state.units.wave === "ft") return (m * M_TO_FT).toFixed(1) + " ft";
+  return m.toFixed(1) + " m";
+}
+function fmtTemp(c) {
+  if (c == null) return "—";
+  if (state.units.temp === "f") return Math.round(c * 9 / 5 + 32) + "°F";
+  return Math.round(c) + "°C";
+}
+function fmtPct(x) { return x == null ? "—" : Math.round(x) + "%"; }
+function fmtMm(x) { return x == null ? "—" : x.toFixed(1) + " mm"; }
+function fmtTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleTimeString("en-NZ", { hour: "2-digit", minute: "2-digit" });
+}
+function fmtHour(iso) {
+  const d = new Date(iso);
+  const h = d.getHours();
+  return (h % 12 || 12) + (h < 12 ? "a" : "p");
+}
+function fmtDayName(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return "Today";
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (d.toDateString() === tomorrow.toDateString()) return "Tomorrow";
+  return d.toLocaleDateString("en-NZ", { weekday: "short", day: "numeric" });
+}
+function compass(deg) {
+  if (deg == null) return "—";
+  const dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"];
+  return dirs[Math.round(((deg % 360) / 22.5)) % 16];
+}
+
+// Stats
+function mean(arr) {
+  const v = arr.filter((x) => typeof x === "number" && !Number.isNaN(x));
+  if (!v.length) return null;
+  return v.reduce((a, b) => a + b, 0) / v.length;
+}
+function range(arr) {
+  const v = arr.filter((x) => typeof x === "number" && !Number.isNaN(x));
+  if (!v.length) return [null, null];
+  return [Math.min(...v), Math.max(...v)];
+}
+function circularMean(degs) {
+  const v = degs.filter((x) => typeof x === "number" && !Number.isNaN(x));
+  if (!v.length) return null;
+  const rad = v.map((d) => (d * Math.PI) / 180);
+  const x = mean(rad.map(Math.cos));
+  const y = mean(rad.map(Math.sin));
+  let a = (Math.atan2(y, x) * 180) / Math.PI;
+  if (a < 0) a += 360;
+  return a;
+}
+
+// ---------- Fetching ----------
+
+async function fetchForecast(spot) {
+  const base = "https://api.open-meteo.com/v1/forecast";
+  const params = new URLSearchParams({
+    latitude: spot.lat,
+    longitude: spot.lon,
+    hourly: WEATHER_VARS.join(","),
+    daily: DAILY_VARS.join(","),
+    timezone: "Pacific/Auckland",
+    wind_speed_unit: "kmh",
+    forecast_days: "7",
+    models: WEATHER_MODELS.join(",")
+  });
+  const r = await fetch(`${base}?${params}`);
+  if (!r.ok) throw new Error("Forecast fetch failed: " + r.status);
+  return r.json();
+}
+
+async function fetchMarine(spot) {
+  const base = "https://marine-api.open-meteo.com/v1/marine";
+  const params = new URLSearchParams({
+    latitude: spot.lat,
+    longitude: spot.lon,
+    hourly: MARINE_VARS.join(","),
+    daily: "wave_height_max,wave_direction_dominant,wave_period_max",
+    timezone: "Pacific/Auckland",
+    forecast_days: "7"
+  });
+  const r = await fetch(`${base}?${params}`);
+  if (!r.ok) {
+    // Marine is unavailable for very inland points; fail soft.
+    return null;
+  }
+  return r.json();
+}
+
+// api.solunar.org — free, no API key. Returns real moonrise/moonset, major +
+// minor bite windows from proper lunar transit, plus a 0–100 day rating.
+//
+// URL form: https://api.solunar.org/solunar/{lat},{lon},{YYYYMMDD},{tzOffset}
+//
+// Fails soft — if it 404s, times out, or CORS-blocks, we fall back to the
+// client-side approximation in solunarWindows().
+async function fetchSolunar(spot, date = new Date()) {
+  const dateStr = spotDateString(spot, date);
+  const tz = tzOffsetForSpot(spot, date);
+  const url = `https://api.solunar.org/solunar/${spot.lat.toFixed(4)},${spot.lon.toFixed(4)},${dateStr},${tz}`;
+  try {
+    const r = await fetch(url, { mode: "cors" });
+    if (!r.ok) return null;
+    const j = await r.json();
+    // Normalise — convert HH:MM strings to today-local Date objects.
+    return {
+      sunRise:   parseHm(j.sunRise, date),
+      sunSet:    parseHm(j.sunSet, date),
+      moonRise:  parseHm(j.moonRise, date),
+      moonSet:   parseHm(j.moonSet, date),
+      moonPhase: j.moonPhase,
+      moonIllumination: j.moonIllumination,
+      majorA: { start: parseHm(j.major1Start, date), end: parseHm(j.major1Stop, date) },
+      majorB: { start: parseHm(j.major2Start, date), end: parseHm(j.major2Stop, date) },
+      minorA: { start: parseHm(j.minor1Start, date), end: parseHm(j.minor1Stop, date) },
+      minorB: { start: parseHm(j.minor2Start, date), end: parseHm(j.minor2Stop, date) },
+      dayRating: j.dayRating != null ? Number(j.dayRating) : null,  // 0-100
+      hourSummary: j.hourSummary || null
+    };
+  } catch {
+    return null;
+  }
+}
+
+// "HH:MM" → Date object on the given baseDate (in local timezone).
+function parseHm(hm, baseDate) {
+  if (typeof hm !== "string" || !/^\d{1,2}:\d{2}/.test(hm)) return null;
+  const [h, m] = hm.split(":").map(Number);
+  const d = new Date(baseDate);
+  d.setHours(h, m, 0, 0);
+  return d;
+}
+
+// Local-date string in YYYYMMDD for the spot's timezone (NZ-aware).
+function spotDateString(spot, date) {
+  const tz = isNZSpot(spot) ? "Pacific/Auckland" : undefined;
+  try {
+    const fmt = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric", month: "2-digit", day: "2-digit"
+    });
+    return fmt.format(date).replace(/-/g, "");
+  } catch {
+    return date.getFullYear().toString() +
+           String(date.getMonth() + 1).padStart(2, "0") +
+           String(date.getDate()).padStart(2, "0");
+  }
+}
+
+// Hour offset from UTC for the spot on the given date. NZ-aware so daylight
+// saving is handled correctly across the year.
+function tzOffsetForSpot(spot, date) {
+  try {
+    const tz = isNZSpot(spot)
+      ? "Pacific/Auckland"
+      : Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const fmt = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, timeZoneName: "shortOffset"
+    });
+    const parts = fmt.formatToParts(date);
+    const tzName = parts.find((p) => p.type === "timeZoneName")?.value || "";
+    const m = tzName.match(/GMT([+-]?\d+)/);
+    return m ? parseInt(m[1], 10) : 12;
+  } catch {
+    return -date.getTimezoneOffset() / 60;
+  }
+}
+
+function isNZSpot(spot) {
+  return spot.lat < -34 && spot.lat > -48 && spot.lon > 165 && spot.lon < 180;
+}
+
+async function fetchAir(spot) {
+  const base = "https://air-quality-api.open-meteo.com/v1/air-quality";
+  const params = new URLSearchParams({
+    latitude: spot.lat,
+    longitude: spot.lon,
+    hourly: "pm10,pm2_5,uv_index",
+    timezone: "Pacific/Auckland",
+    forecast_days: "2"
+  });
+  try {
+    const r = await fetch(`${base}?${params}`);
+    if (!r.ok) return null;
+    return r.json();
+  } catch { return null; }
+}
+
+// ---------- Aggregation across models ----------
+//
+// Open-Meteo, when given multiple models, returns each variable suffixed with
+// `_<model>` (e.g. `temperature_2m_ecmwf_ifs025`). We collapse these into
+// mean + per-model arrays.
+
+function aggregateMultiModel(json) {
+  const hourly = json.hourly;
+  const daily = json.daily;
+  if (!hourly) return null;
+
+  const time = hourly.time;
+  const N = time.length;
+
+  // Group hourly fields by base variable name.
+  const hAgg = { time };
+  for (const v of WEATHER_VARS) {
+    const perModel = {};
+    for (const m of WEATHER_MODELS) {
+      const key = `${v}_${m}`;
+      if (Array.isArray(hourly[key])) perModel[m] = hourly[key];
+    }
+    const isDir = v === "wind_direction_10m";
+    const meanArr = new Array(N);
+    const minArr = new Array(N);
+    const maxArr = new Array(N);
+    for (let i = 0; i < N; i++) {
+      const vals = Object.values(perModel).map((a) => a[i]).filter((x) => typeof x === "number");
+      if (!vals.length) {
+        meanArr[i] = null; minArr[i] = null; maxArr[i] = null;
+      } else if (isDir) {
+        meanArr[i] = circularMean(vals);
+        minArr[i] = null; maxArr[i] = null;
+      } else {
+        meanArr[i] = mean(vals);
+        minArr[i] = Math.min(...vals);
+        maxArr[i] = Math.max(...vals);
+      }
+    }
+    hAgg[v] = meanArr;
+    hAgg[`${v}_min`] = minArr;
+    hAgg[`${v}_max`] = maxArr;
+    hAgg[`${v}_models`] = perModel;
+  }
+
+  // Daily — average per model.
+  const dAgg = { time: daily.time };
+  for (const v of DAILY_VARS) {
+    const perModel = [];
+    for (const m of WEATHER_MODELS) {
+      const k = `${v}_${m}`;
+      if (Array.isArray(daily[k])) perModel.push(daily[k]);
+    }
+    if (v === "sunrise" || v === "sunset") {
+      // Take the first model that has these (they're astronomical, identical across models).
+      dAgg[v] = perModel[0] || daily[v] || [];
+    } else if (v === "weather_code") {
+      // Modal value across models.
+      const N2 = (perModel[0] || []).length;
+      dAgg[v] = new Array(N2);
+      for (let i = 0; i < N2; i++) {
+        const codes = perModel.map((a) => a[i]).filter((x) => x != null);
+        dAgg[v][i] = mode(codes);
+      }
+    } else {
+      const N2 = (perModel[0] || []).length;
+      dAgg[v] = new Array(N2);
+      for (let i = 0; i < N2; i++) {
+        const vals = perModel.map((a) => a[i]).filter((x) => typeof x === "number");
+        dAgg[v][i] = vals.length ? mean(vals) : null;
+      }
+    }
+  }
+
+  return { hourly: hAgg, daily: dAgg };
+}
+
+function mode(arr) {
+  if (!arr.length) return null;
+  const counts = new Map();
+  for (const v of arr) counts.set(v, (counts.get(v) || 0) + 1);
+  let best = arr[0], bestN = -1;
+  for (const [k, n] of counts) if (n > bestN) { best = k; bestN = n; }
+  return best;
+}
+
+// ---------- Tide processing ----------
+//
+// Open-Meteo's marine endpoint returns sea_level_height_msl as a smooth tidal
+// curve in metres relative to mean sea level. We find local minima/maxima to
+// extract high/low tide times.
+
+function extractTideEvents(times, heights, todayOnly = true) {
+  const events = [];
+  if (!times || !heights) return events;
+  const today = new Date();
+  const dayKey = today.toDateString();
+  for (let i = 1; i < heights.length - 1; i++) {
+    const h = heights[i];
+    if (h == null) continue;
+    const prev = heights[i - 1];
+    const next = heights[i + 1];
+    if (prev == null || next == null) continue;
+    const t = new Date(times[i]);
+    if (todayOnly && t.toDateString() !== dayKey) continue;
+    if (h > prev && h > next) events.push({ time: times[i], height: h, type: "high" });
+    else if (h < prev && h < next) events.push({ time: times[i], height: h, type: "low" });
+  }
+  return events;
+}
+
+// ---------- Solunar / astronomy ----------
+//
+// Simplified moon-phase + lunar-transit calc. Good enough for solunar major /
+// minor windows used by fishermen.
+
+function moonPhase(date) {
+  // Returns fraction 0..1, 0 = new moon, 0.5 = full.
+  const synodic = 29.530588853;
+  const ref = new Date(Date.UTC(2000, 0, 6, 18, 14)); // known new moon
+  const days = (date - ref) / 86400000;
+  return ((days % synodic) + synodic) % synodic / synodic;
+}
+function moonPhaseName(p) {
+  if (p < 0.03 || p > 0.97) return "New moon";
+  if (p < 0.22) return "Waxing crescent";
+  if (p < 0.28) return "First quarter";
+  if (p < 0.47) return "Waxing gibbous";
+  if (p < 0.53) return "Full moon";
+  if (p < 0.72) return "Waning gibbous";
+  if (p < 0.78) return "Last quarter";
+  return "Waning crescent";
+}
+function moonIllumination(p) {
+  return Math.round((1 - Math.cos(2 * Math.PI * p)) / 2 * 100);
+}
+
+// Simplified moon transit times (overhead, underfoot). Returns ISO times today.
+function lunarTransits(date, lon) {
+  // Moon transits ~50min later each day. Use an offset from solar noon.
+  const sm = solarMean(date, lon); // noon UTC adjusted to local longitude
+  const phase = moonPhase(date);
+  // Phase fraction of synodic month → hour offset from solar noon (~24.84h cycle / 2)
+  const offsetHours = phase * 24.84; // moon lags sun by ~12.42h per half cycle
+  const overheadMs = sm + offsetHours * 3600 * 1000;
+  const underfootMs = overheadMs + 12.42 * 3600 * 1000;
+  return {
+    overhead: new Date(overheadMs).toISOString(),
+    underfoot: new Date(underfootMs).toISOString()
+  };
+}
+function solarMean(date, lon) {
+  // Returns ms timestamp of approximate solar noon at given longitude today.
+  const d = new Date(date);
+  d.setUTCHours(12, 0, 0, 0);
+  return d.getTime() - (lon * 4 * 60 * 1000); // 4 min per degree
+}
+
+// Solunar windows: 2h major centred on lunar transit (overhead / underfoot),
+// 3h minor centred on moonrise / moonset (approximated as transit ± 6.21h).
+// Width matches the Fishing Website / Solunar Theory convention.
+function solunarWindows(date, lon) {
+  const t = lunarTransits(date, lon);
+  const ov = new Date(t.overhead).getTime();
+  const uf = new Date(t.underfoot).getTime();
+  const moonRise = ov + 6.21 * 3600 * 1000;   // ~6h after overhead
+  const moonSet  = ov - 6.21 * 3600 * 1000;   // ~6h before overhead
+  return {
+    majorA: { start: new Date(ov - 60 * 60 * 1000), end: new Date(ov + 60 * 60 * 1000) },
+    majorB: { start: new Date(uf - 60 * 60 * 1000), end: new Date(uf + 60 * 60 * 1000) },
+    // 3-hour minor windows (matches the wider convention used by most fishing sites)
+    minorA: { start: new Date(moonRise - 90 * 60 * 1000), end: new Date(moonRise + 90 * 60 * 1000) },
+    minorB: { start: new Date(moonSet  - 90 * 60 * 1000), end: new Date(moonSet  + 90 * 60 * 1000) }
+  };
+}
+
+// Solunar day score 0..100 based on moon phase strength and overlap with daylight.
+function solunarDayScore(date, lon, sunriseISO, sunsetISO) {
+  const phase = moonPhase(date);
+  const phaseStrength = Math.cos(2 * Math.PI * phase); // +1 full, -1 new
+  // Both new and full are strong — use abs of (full-ness − 0.5) inverted.
+  const strong = 1 - Math.abs(Math.abs(phase - 0.5) - 0.5) * 4; // peaks at 0 and 0.5
+  const base = (strong + 1) / 2 * 70; // 0..70
+  const w = solunarWindows(date, lon);
+  let dayBonus = 0;
+  if (sunriseISO && sunsetISO) {
+    const sr = new Date(sunriseISO).getTime();
+    const ss = new Date(sunsetISO).getTime();
+    for (const win of [w.majorA, w.majorB, w.minorA, w.minorB]) {
+      if (win.start.getTime() < ss && win.end.getTime() > sr) {
+        dayBonus += win === w.majorA || win === w.majorB ? 10 : 5;
+      }
+    }
+  }
+  return Math.min(100, Math.round(base + dayBonus));
+}
+
+// ---------- Weather code → icon/text ----------
+
+const WMO = {
+  0: ["☀️", "Clear"],
+  1: ["🌤️", "Mainly clear"],
+  2: ["⛅", "Partly cloudy"],
+  3: ["☁️", "Overcast"],
+  45: ["🌫️", "Fog"], 48: ["🌫️", "Rime fog"],
+  51: ["🌦️", "Light drizzle"], 53: ["🌦️", "Drizzle"], 55: ["🌦️", "Heavy drizzle"],
+  61: ["🌧️", "Light rain"], 63: ["🌧️", "Rain"], 65: ["🌧️", "Heavy rain"],
+  71: ["🌨️", "Light snow"], 73: ["🌨️", "Snow"], 75: ["❄️", "Heavy snow"],
+  80: ["🌦️", "Showers"], 81: ["🌧️", "Showers"], 82: ["⛈️", "Heavy showers"],
+  95: ["⛈️", "Thunderstorm"], 96: ["⛈️", "Storm + hail"], 99: ["⛈️", "Severe storm"]
+};
+function wmo(code) { return WMO[code] || ["•", "—"]; }
+
+// ---------- Verdict scoring ----------
+
+function hourVerdict(h, marineHour) {
+  const t = state.thresholds;
+  const windKt = (h.wind_speed_10m || 0) * KMH_TO_KT;
+  const gustKt = (h.wind_gusts_10m || 0) * KMH_TO_KT;
+  const wave   = marineHour?.wave_height ?? 0;
+  const rain   = h.precipitation || 0;
+  const temp   = h.temperature_2m;
+
+  let breaches = 0;
+  if (windKt > t.maxWindKt) breaches++;
+  if (gustKt > t.maxGustKt) breaches++;
+  if (wave > t.maxWaveM) breaches++;
+  if (rain > t.maxRainMm) breaches++;
+  if (temp != null && temp < t.minTempC) breaches++;
+
+  if (breaches === 0) return "green";
+  if (breaches <= 1)  return "amber";
+  return "red";
+}
+
+// 0-100 "fishability" for a single hour. Smooth — each metric contributes
+// proportionally to its distance from threshold so the bar tells you "how
+// nice" rather than just pass/fail. Used by the hour cards.
+function hourScore(h, marineHour) {
+  const t = state.thresholds;
+  const windKt = (h.wind_speed_10m || 0) * KMH_TO_KT;
+  const gustKt = (h.wind_gusts_10m || 0) * KMH_TO_KT;
+  const wave   = marineHour?.wave_height ?? 0;
+  const rain   = h.precipitation || 0;
+  const temp   = h.temperature_2m;
+
+  // Fraction-of-budget used for each metric, clamped [0,2]. 0 = idyllic, 1 =
+  // at threshold, >1 = over.
+  const w = Math.min(2, windKt / Math.max(1, t.maxWindKt));
+  const g = Math.min(2, gustKt / Math.max(1, t.maxGustKt));
+  const v = Math.min(2, wave   / Math.max(0.1, t.maxWaveM));
+  const r = Math.min(2, rain   / Math.max(0.1, t.maxRainMm));
+  const cold = temp != null && temp < t.minTempC ? Math.min(2, (t.minTempC - temp) / 5) : 0;
+
+  // Weighted penalty (wind+gust are the biggest fishing killers).
+  const penalty = (w * 28 + g * 22 + v * 22 + r * 18 + cold * 10);
+  return Math.max(0, Math.min(100, Math.round(100 - penalty)));
+}
+
+function bestWindowToday(hourly, marineHourly, sunriseISO, sunsetISO) {
+  const sr = new Date(sunriseISO || Date.now()).getTime();
+  const ss = new Date(sunsetISO || (Date.now() + 12 * 3600 * 1000)).getTime();
+  let bestStart = null, bestEnd = null, runStart = null;
+  for (let i = 0; i < hourly.time.length; i++) {
+    const t = new Date(hourly.time[i]).getTime();
+    if (t < sr || t > ss) { runStart = null; continue; }
+    const mIdx = marineHourly ? indexAtTime(marineHourly.time, hourly.time[i]) : -1;
+    const mH = mIdx >= 0 ? sliceHour(marineHourly, mIdx) : null;
+    const h = sliceHour(hourly, i);
+    const v = hourVerdict(h, mH);
+    if (v === "green") {
+      if (runStart == null) runStart = t;
+      const len = t - runStart;
+      const bestLen = bestStart ? bestEnd - bestStart : 0;
+      if (len > bestLen) { bestStart = runStart; bestEnd = t; }
+    } else runStart = null;
+  }
+  return bestStart ? { start: new Date(bestStart), end: new Date(bestEnd) } : null;
+}
+
+function indexAtTime(times, iso) {
+  for (let i = 0; i < times.length; i++) if (times[i] === iso) return i;
+  return -1;
+}
+function sliceHour(h, i) {
+  const out = {};
+  for (const k of Object.keys(h)) {
+    if (Array.isArray(h[k])) out[k] = h[k][i];
+  }
+  return out;
+}
+
+// ---------- Rendering ----------
+
+function renderSpotPicker() {
+  const wrap = $("#spotPicker");
+  wrap.innerHTML = "";
+  for (const s of state.spots) {
+    const chip = el("button", {
+      class: "spot-chip" + (s.id === state.activeSpotId ? " active" : ""),
+      onclick: () => { state.activeSpotId = s.id; saveJSON("activeSpotId", s.id); refreshOpenMapsLink(); refresh(); }
+    }, s.name);
+    wrap.appendChild(chip);
+  }
+  // GPS chip
+  const gps = el("button", {
+    class: "spot-chip" + (state.activeSpotId === "__gps__" ? " active" : ""),
+    onclick: useGPS
+  }, "📍 Use my location");
+  wrap.appendChild(gps);
+}
+
+function useGPS() {
+  if (!navigator.geolocation) { toast("No geolocation available"); return; }
+  toast("Locating…");
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const lat = +pos.coords.latitude.toFixed(4);
+      const lon = +pos.coords.longitude.toFixed(4);
+      const existing = state.spots.find((s) => s.id === "__gps__");
+      const spot = { id: "__gps__", name: "My location", lat, lon };
+      if (existing) Object.assign(existing, spot);
+      else state.spots.unshift(spot);
+      saveJSON("spots", state.spots);
+      state.activeSpotId = "__gps__";
+      saveJSON("activeSpotId", "__gps__");
+      refresh();
+    },
+    (err) => toast("Couldn't get GPS: " + err.message),
+    { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+  );
+}
+
+function renderAll() {
+  const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
+  $("#spotName").textContent = spot.name;
+  $("#spotMeta").textContent = `${spot.lat.toFixed(3)}, ${spot.lon.toFixed(3)} · updated ${new Date().toLocaleTimeString("en-NZ", { hour: "2-digit", minute: "2-digit" })}`;
+
+  // Compute once, share across cards so the daily badge in the 7-day row uses
+  // the same number as the Best-day card and the hero "now score".
+  const dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
+
+  renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
+  renderWarnings(hourlyAgg, marine);
+  renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
+  renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+  renderHourly(hourlyAgg, marine);
+  renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+  renderTides(marine);
+  renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar);
+  renderSeaTemp(marine);
+  renderWind(hourlyAgg);
+  renderSwell(marine, hourlyAgg);
+  renderXLinks(spot);
+  renderSolunar(spot, dailyAgg, air, solunar);
+  renderAgreement(hourlyAgg);
+}
+
+// Per-day 0-100 score + a "peak window" — the longest run of green hours
+// within daylight for the day. Shared between the hero, the 7-day row badge,
+// and the Best-day card so all three agree.
+function computeDailyScores(daily, hourly, marine, spot) {
+  const out = [];
+  for (let d = 0; d < daily.time.length; d++) {
+    const dayKey = daily.time[d];
+
+    const allIdxs = [];
+    for (let i = 0; i < hourly.time.length; i++) {
+      if (hourly.time[i].startsWith(dayKey)) allIdxs.push(i);
+    }
+    const dayIdxs = allIdxs.filter((i) => {
+      const hh = new Date(hourly.time[i]).getHours();
+      return hh >= 6 && hh <= 20;
+    });
+
+    // 1) Weather (0-30): green-hour ratio across daylight.
+    let greenHrs = 0;
+    let runStart = null, bestStart = null, bestEnd = null;
+    for (const i of dayIdxs) {
+      const cur = sliceHour(hourly, i);
+      const mIdx = marine ? indexAtTime(marine.hourly.time, hourly.time[i]) : -1;
+      const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
+      const v = hourVerdict(cur, mCur);
+      if (v === "green") {
+        greenHrs++;
+        const t = new Date(hourly.time[i]).getTime();
+        if (runStart == null) runStart = t;
+        const len = t - runStart;
+        const bestLen = bestStart ? bestEnd - bestStart : 0;
+        if (len >= bestLen) { bestStart = runStart; bestEnd = t + 3600 * 1000; }
+      } else {
+        runStart = null;
+      }
+    }
+    const greenRatio = dayIdxs.length ? greenHrs / dayIdxs.length : 0;
+    const weatherScore = greenRatio * 30;
+
+    // 2) Tide range (0-25). Auckland-calibrated.
+    let tideScore = 12.5, tideRange = null;
+    if (marine?.hourly?.sea_level_height_msl) {
+      const mIdxs = [];
+      for (let i = 0; i < marine.hourly.time.length; i++) {
+        if (marine.hourly.time[i].startsWith(dayKey)) mIdxs.push(i);
+      }
+      const hs = mIdxs.map((i) => marine.hourly.sea_level_height_msl[i]).filter((x) => x != null);
+      if (hs.length) {
+        tideRange = Math.max(...hs) - Math.min(...hs);
+        const pct = Math.max(0, Math.min(1, (tideRange - 1.5) / (3.4 - 1.5)));
+        tideScore = pct * 25;
+      }
+    }
+
+    // 3) Solunar (0-25).
+    const dayDate = new Date(dayKey + "T12:00:00");
+    const solScore01 = solunarDayScore(dayDate, spot.lon, daily.sunrise?.[d], daily.sunset?.[d]) / 100;
+    const solComp = solScore01 * 25;
+
+    // 4) Barometric trend (0-20).
+    let barScore = 10;
+    if (allIdxs.length >= 12 && hourly.pressure_msl) {
+      const pStart = hourly.pressure_msl[allIdxs[0]];
+      const pEnd = hourly.pressure_msl[allIdxs[allIdxs.length - 1]];
+      if (pStart != null && pEnd != null) {
+        const norm = Math.max(-1, Math.min(1, (pEnd - pStart) / 4));
+        barScore = 10 + norm * 10;
+      }
+    }
+
+    const total = Math.round(weatherScore + tideScore + solComp + barScore);
+
+    const reasons = [];
+    if (greenRatio > 0.7) reasons.push("light winds");
+    else if (greenRatio < 0.3) reasons.push("rough weather");
+    if (tideScore > 18) reasons.push("spring tides");
+    else if (tideScore < 7) reasons.push("neap tides");
+    if (solComp > 18) reasons.push("strong solunar");
+    if (barScore > 16) reasons.push("rising pressure");
+    else if (barScore < 4) reasons.push("falling pressure");
+
+    out.push({
+      date: dayKey,
+      score: total,
+      reasons: reasons.length ? reasons : ["average conditions"],
+      peakStart: bestStart ? new Date(bestStart) : null,
+      peakEnd: bestEnd ? new Date(bestEnd) : null
+    });
+  }
+  return out;
+}
+
+// ---------- Bite times (dedicated card, high on the page) ----------
+
+const FISH_SVG = (color) => `<svg class="fish-svg" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+  <path d="M2 12 C 5 7, 11 5, 16 6.5 L 20 4 L 20 20 L 16 17.5 C 11 19, 5 17, 2 12 Z" fill="${color}"/>
+  <circle cx="15" cy="11" r="1.2" fill="#0b1a2b"/>
+  <path d="M 16 6.5 L 16 17.5" stroke="${color}" stroke-width="0.5" opacity="0.4"/>
+</svg>`;
+
+function renderBiteTimes(spot, solunarToday, solunarTomorrow, daily) {
+  const wrap = $("#biteToday");
+  const headline = $("#biteHeadline");
+  wrap.innerHTML = "";
+
+  const today = new Date();
+  const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  // For the card headline: show today's day rating.
+  const todayUseApi = !!(solunarToday && solunarToday.majorA?.start);
+  const todayRating = todayUseApi && solunarToday.dayRating != null
+    ? Math.round(solunarToday.dayRating)
+    : solunarDayScore(today, spot.lon, daily.sunrise?.[0], daily.sunset?.[0]);
+  headline.textContent = `· today ${todayRating}/100`;
+
+  wrap.append(
+    biteDaySection("Today",    today,    solunarToday,    spot, daily, 0),
+    biteDaySection("Tomorrow", tomorrow, solunarTomorrow, spot, daily, 1)
+  );
+}
+
+function biteDaySection(label, date, solunar, spot, daily, dayIdx) {
+  const useApi = !!(solunar && solunar.majorA?.start);
+  const w = useApi ? solunar : solunarWindows(date, spot.lon);
+  const now = Date.now();
+  const winT = (t) => (t instanceof Date ? t : new Date(t));
+  const isNow = (win) => {
+    if (!win?.start || !win?.end) return false;
+    const s = winT(win.start).getTime();
+    const e = winT(win.end).getTime();
+    return now >= s && now <= e;
+  };
+
+  const rating = useApi && solunar.dayRating != null
+    ? Math.round(solunar.dayRating)
+    : solunarDayScore(date, spot.lon, daily.sunrise?.[dayIdx], daily.sunset?.[dayIdx]);
+
+  return el("div", { class: "bite-day" }, [
+    el("h4", {}, [
+      el("span", {}, label),
+      el("span", { class: "day-rating" }, `${rating}/100`)
+    ]),
+    el("div", { class: "bite-grid" }, [
+      el("div", { class: "bite-col" }, [
+        el("h3", { html: `${FISH_SVG("#ffd47a")} Major bite` }),
+        biteRow("major", w.majorA, isNow(w.majorA), "#ffd47a"),
+        biteRow("major", w.majorB, isNow(w.majorB), "#ffd47a")
+      ]),
+      el("div", { class: "bite-col" }, [
+        el("h3", { html: `${FISH_SVG("#ff7a7a")} Minor bite` }),
+        biteRow("minor", w.minorA, isNow(w.minorA), "#ff7a7a"),
+        biteRow("minor", w.minorB, isNow(w.minorB), "#ff7a7a")
+      ])
+    ])
+  ]);
+}
+
+function biteRow(type, win, isNow, color) {
+  if (!win?.start || !win?.end) {
+    return el("div", { class: `bite-row ${type}` }, [el("span", {}, "—")]);
+  }
+  const s = win.start instanceof Date ? win.start : new Date(win.start);
+  const e = win.end   instanceof Date ? win.end   : new Date(win.end);
+  return el("div", { class: `bite-row ${type}` }, [
+    el("span", { class: "fish-svg", html: FISH_SVG(color) }),
+    el("span", { class: "range" }, `${fmtTime(s.toISOString())} – ${fmtTime(e.toISOString())}`),
+    isNow ? el("span", { class: "now-tag" }, "NOW") : null
+  ]);
+}
+
+// ---------- Marine warnings ----------
+//
+// Forecast-derived using actual NZ MetService warning thresholds. NOT an
+// official warning — we link to the real page beneath. This catches the
+// "should I even be looking at the forecast" question first.
+
+function renderWarnings(hourly, marine) {
+  const card = $("#warningsCard");
+  const body = $("#warningsBody");
+  const headline = $("#warningsHeadline");
+  body.innerHTML = "";
+
+  const now = Date.now();
+  let s = 0;
+  for (let i = 0; i < hourly.time.length; i++) {
+    if (new Date(hourly.time[i]).getTime() >= now - 30 * 60 * 1000) { s = i; break; }
+  }
+  const e = Math.min(s + 48, hourly.time.length);
+
+  // Find peak wind, peak gust, peak wave across next 48h.
+  let pkWind = 0, pkWindT = null;
+  let pkGust = 0, pkGustT = null;
+  for (let i = s; i < e; i++) {
+    const w = (hourly.wind_speed_10m[i] || 0) * KMH_TO_KT;
+    const g = (hourly.wind_gusts_10m[i] || 0) * KMH_TO_KT;
+    if (w > pkWind) { pkWind = w; pkWindT = hourly.time[i]; }
+    if (g > pkGust) { pkGust = g; pkGustT = hourly.time[i]; }
+  }
+
+  let pkWave = 0, pkWaveT = null;
+  if (marine?.hourly?.wave_height) {
+    const mt = marine.hourly.time, wh = marine.hourly.wave_height;
+    for (let i = 0; i < mt.length; i++) {
+      const t = new Date(mt[i]).getTime();
+      if (t < now - 30 * 60 * 1000) continue;
+      if (t > now + 48 * 3600 * 1000) break;
+      if (wh[i] != null && wh[i] > pkWave) { pkWave = wh[i]; pkWaveT = mt[i]; }
+    }
+  }
+
+  const warnings = [];
+
+  // NZ MetService wind warning thresholds (mean wind, sustained).
+  if (pkWind >= 48) warnings.push({
+    cls: "storm",
+    cat: "Storm warning likely",
+    when: `Mean wind to ${Math.round(pkWind)} kt around ${fmtTime(pkWindT)}`
+  });
+  else if (pkWind >= 34) warnings.push({
+    cls: "gale",
+    cat: "Gale warning likely",
+    when: `Mean wind to ${Math.round(pkWind)} kt around ${fmtTime(pkWindT)}`
+  });
+  else if (pkWind >= 25) warnings.push({
+    cls: "strong",
+    cat: "Strong wind warning likely",
+    when: `Mean wind to ${Math.round(pkWind)} kt around ${fmtTime(pkWindT)}`
+  });
+
+  // Gust warning — only if it's notably more than mean (otherwise covered above).
+  if (pkGust >= 45 && pkGust > pkWind * 1.4) {
+    warnings.push({
+      cls: "strong",
+      cat: "Severe gusts forecast",
+      when: `Gusts to ${Math.round(pkGust)} kt around ${fmtTime(pkGustT)}`
+    });
+  }
+
+  // Wave / swell.
+  if (pkWave >= 4) warnings.push({
+    cls: "swell",
+    cat: "Heavy swell forecast",
+    when: `Sig. wave height ${pkWave.toFixed(1)} m around ${fmtTime(pkWaveT)}`
+  });
+  else if (pkWave >= 2.5) warnings.push({
+    cls: "swell",
+    cat: "Rough seas forecast",
+    when: `Sig. wave height ${pkWave.toFixed(1)} m around ${fmtTime(pkWaveT)}`
+  });
+
+  // Card colouring + headline
+  card.classList.remove("clear", "amber", "red");
+  if (!warnings.length) {
+    card.classList.add("clear");
+    headline.textContent = "· all clear";
+    body.appendChild(el("div", { class: "allclear" }, [
+      el("span", { class: "pip" }),
+      "No warning-level conditions forecast in the next 48 hours."
+    ]));
+    return;
+  }
+  const hasRed = warnings.some((w) => w.cls === "storm" || w.cls === "gale");
+  card.classList.add(hasRed ? "red" : "amber");
+  headline.textContent = `· ${warnings.length} ${hasRed ? "alert" : "advisory"}${warnings.length > 1 ? "s" : ""}`;
+
+  for (const w of warnings) {
+    body.appendChild(el("div", { class: "warning " + w.cls }, [
+      el("div", { class: "cat" }, w.cat),
+      el("div", { class: "when" }, w.when)
+    ]));
+  }
+}
+
+// ---------- Best day this week ----------
+//
+// 0-100 daily fishing score combining: weather (% of daylight hours that meet
+// your thresholds, weight 30), tide range / spring-vs-neap (25), solunar (25),
+// barometric trend (20). Shown as a sortable-by-day list with the top day
+// starred.
+
+function renderBestDay(daily, hourly, marine, spot, scores) {
+  const wrap = $("#bestDayList");
+  const headline = $("#bestDayHeadline");
+  wrap.innerHTML = "";
+
+  // Identify top day(s).
+  const maxScore = Math.max(...scores.map((s) => s.score));
+  headline.textContent = scores.length
+    ? `· top score ${maxScore}/100`
+    : "";
+
+  for (const sObj of scores) {
+    const isTop = sObj.score === maxScore && maxScore > 50;
+    const cls = sObj.score >= 70 ? "high" : sObj.score >= 45 ? "mid" : "low";
+    wrap.appendChild(el("div", { class: "best-row" + (isTop ? " top" : "") }, [
+      el("div", { class: "name" }, [
+        isTop ? el("span", { class: "star" }, "★ ") : null,
+        fmtDayName(sObj.date)
+      ]),
+      el("div", { class: "middle" }, [
+        el("div", { class: "why" }, sObj.reasons.join(" · ")),
+        el("div", { class: "bar" }, [
+          el("div", { style: `width:${Math.max(2, sObj.score)}%` })
+        ])
+      ]),
+      el("div", { class: "score " + cls }, String(sObj.score))
+    ]));
+  }
+}
+
+// ---------- Sea temperature trend ----------
+
+function renderSeaTemp(marine) {
+  const svg = $("#sstChart");
+  const legend = $("#sstLegend");
+  const headline = $("#sstHeadline");
+  svg.innerHTML = "";
+  legend.innerHTML = "";
+  headline.textContent = "";
+
+  if (!marine?.hourly?.sea_surface_temperature) {
+    svg.innerHTML = `<text x="160" y="70" text-anchor="middle" fill="#7c97ad" font-size="12">No sea-surface temperature data for this point</text>`;
+    return;
+  }
+
+  const times = marine.hourly.time;
+  const ssts  = marine.hourly.sea_surface_temperature;
+
+  // Group by calendar day to compute daily min/mean/max.
+  const byDay = new Map();
+  for (let i = 0; i < times.length; i++) {
+    const day = times[i].slice(0, 10);
+    if (!byDay.has(day)) byDay.set(day, []);
+    if (ssts[i] != null) byDay.get(day).push(ssts[i]);
+  }
+  const days = [];
+  for (const [day, vals] of byDay) {
+    if (!vals.length) continue;
+    days.push({
+      day,
+      mean: mean(vals),
+      min: Math.min(...vals),
+      max: Math.max(...vals)
+    });
+  }
+  if (days.length < 2) {
+    svg.innerHTML = `<text x="160" y="70" text-anchor="middle" fill="#7c97ad" font-size="12">Not enough data</text>`;
+    return;
+  }
+
+  // Trend over the window.
+  const first = days[0].mean;
+  const last  = days[days.length - 1].mean;
+  const delta = last - first;
+  const trendCls = Math.abs(delta) < 0.2 ? "" : (delta > 0 ? "warming" : "cooling");
+  const trendWord = Math.abs(delta) < 0.2 ? "steady" : (delta > 0 ? "warming" : "cooling");
+
+  const nowIdx = (() => {
+    const now = Date.now();
+    for (let i = 0; i < times.length; i++) {
+      if (new Date(times[i]).getTime() >= now - 30 * 60 * 1000) return i;
+    }
+    return 0;
+  })();
+  const currentSST = ssts[nowIdx];
+
+  headline.textContent = currentSST != null
+    ? `· now ${fmtTemp(currentSST)}, ${trendWord} ${delta > 0 ? "+" : ""}${delta.toFixed(1)}°C over 7d`
+    : "";
+
+  // Draw chart.
+  const W = 320, H = 160, pad = 24;
+  const allVals = days.flatMap((d) => [d.min, d.max]);
+  // Always include the threshold lines in the y-range.
+  const THRESHOLDS = [
+    { v: 14, label: "Snapper retreat (14°C)", color: "#5b8def" },
+    { v: 16, label: "Snapper active (16°C)",  color: "#7cc4e8" },
+    { v: 17, label: "Kingie wake-up (17°C)",  color: "#6fdc8c" },
+    { v: 19, label: "Peak fish activity (19°C)", color: "#ffd47a" }
+  ];
+  for (const t of THRESHOLDS) allVals.push(t.v);
+  const yMin = Math.min(...allVals) - 0.5;
+  const yMax = Math.max(...allVals) + 0.5;
+  const xFor = (i) => pad + (i / (days.length - 1)) * (W - 2 * pad);
+  const yFor = (v) => H - pad - ((v - yMin) / (yMax - yMin)) * (H - 2 * pad);
+
+  // Threshold lines.
+  for (const t of THRESHOLDS) {
+    if (t.v < yMin || t.v > yMax) continue;
+    const y = yFor(t.v);
+    svg.insertAdjacentHTML("beforeend",
+      `<line x1="${pad}" y1="${y}" x2="${W - pad}" y2="${y}"
+             stroke="${t.color}" stroke-width="1" stroke-dasharray="3 4" opacity="0.5"/>
+       <text x="${W - pad - 4}" y="${y - 3}" text-anchor="end" fill="${t.color}" font-size="9" opacity="0.7">${t.v}°</text>`);
+  }
+
+  // Min/max band.
+  let bandTop = "", bandBot = "";
+  for (let i = 0; i < days.length; i++) {
+    const x = xFor(i);
+    bandTop += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + yFor(days[i].max).toFixed(1) + " ";
+  }
+  for (let i = days.length - 1; i >= 0; i--) {
+    const x = xFor(i);
+    bandBot += "L" + x.toFixed(1) + " " + yFor(days[i].min).toFixed(1) + " ";
+  }
+  svg.insertAdjacentHTML("beforeend",
+    `<path d="${bandTop} ${bandBot} Z" fill="#7cc4e8" opacity="0.18"/>`);
+
+  // Mean line.
+  let meanPath = "";
+  for (let i = 0; i < days.length; i++) {
+    const x = xFor(i);
+    meanPath += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + yFor(days[i].mean).toFixed(1) + " ";
+  }
+  svg.insertAdjacentHTML("beforeend",
+    `<path d="${meanPath}" fill="none" stroke="#ffd47a" stroke-width="2.5" stroke-linecap="round"/>`);
+
+  // Day labels.
+  for (let i = 0; i < days.length; i++) {
+    const x = xFor(i);
+    const date = new Date(days[i].day + "T12:00:00");
+    const label = date.toLocaleDateString("en-NZ", { weekday: "short" }).slice(0, 3);
+    svg.insertAdjacentHTML("beforeend",
+      `<text x="${x}" y="${H - 6}" text-anchor="middle" fill="#7c97ad" font-size="9">${label}</text>`);
+  }
+
+  // Current value marker.
+  if (currentSST != null) {
+    // Find x position of current.
+    const now = Date.now();
+    let cx = pad;
+    for (let i = 0; i < days.length; i++) {
+      if (new Date(days[i].day + "T12:00:00").toDateString() === new Date(now).toDateString()) {
+        cx = xFor(i);
+        break;
+      }
+    }
+    const cy = yFor(currentSST);
+    svg.insertAdjacentHTML("beforeend",
+      `<circle cx="${cx}" cy="${cy}" r="4" fill="#ffd47a" stroke="#0b1a2b" stroke-width="1.5"/>`);
+  }
+
+  // Legend.
+  for (const t of THRESHOLDS) {
+    if (t.v < yMin || t.v > yMax) continue;
+    legend.appendChild(el("div", { class: "item" }, [
+      el("div", { class: "swatch", style: `background:${t.color}` }),
+      t.label
+    ]));
+  }
+  legend.appendChild(el("div", { class: "item" }, [
+    el("span", { class: "sst-trend " + trendCls }, `${delta > 0 ? "+" : ""}${delta.toFixed(1)}°C over 7d`)
+  ]));
+}
+
+// ---------- Fishing intel ----------
+//
+// Combines tide range (spring vs neap), next slack water + peak-flow time and
+// rough current speed, barometric trend, and "combo" windows where dawn/dusk
+// lines up with a tide turn or solunar peak.
+
+function renderFishing(marine, hourly, daily, spot, solunar) {
+  const wrap = $("#fishingIntel");
+  const windowsWrap = $("#fishingWindows");
+  const headline = $("#fishingHeadline");
+  wrap.innerHTML = "";
+  windowsWrap.innerHTML = "";
+  headline.textContent = "";
+
+  // -------- Tide range / spring-neap --------
+  let springLabel = null, rangeText = null;
+  let tideEventsAll = [];
+  if (marine?.hourly?.sea_level_height_msl) {
+    const times = marine.hourly.time;
+    const heights = marine.hourly.sea_level_height_msl;
+
+    const today = new Date();
+    const dayKey = today.toDateString();
+    const todayH = [];
+    for (let i = 0; i < times.length; i++) {
+      if (new Date(times[i]).toDateString() === dayKey && heights[i] != null) {
+        todayH.push(heights[i]);
+      }
+    }
+    if (todayH.length) {
+      const hi = Math.max(...todayH);
+      const lo = Math.min(...todayH);
+      const range = hi - lo;
+      // Auckland Harbour: spring range ~3.4m, neap ~1.7m. Normalise.
+      const pct = Math.max(0, Math.min(100, ((range - 1.5) / (3.4 - 1.5)) * 100));
+      if (pct > 80)      springLabel = "Spring tide — strong flow";
+      else if (pct > 60) springLabel = "Approaching spring";
+      else if (pct > 40) springLabel = "Mid-range tide";
+      else if (pct > 20) springLabel = "Approaching neap";
+      else               springLabel = "Neap — light flow";
+      rangeText = `${range.toFixed(1)} m · ${Math.round(pct)}% spring`;
+
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Tide range today"),
+        el("div", { class: "value tide-state" }, range.toFixed(1) + " m"),
+        el("div", { class: "sub" }, springLabel)
+      ]));
+    }
+
+    // -------- Slack water + peak flow --------
+    tideEventsAll = extractTideEvents(times, heights, false);
+    const now = Date.now();
+    const nextEvent = tideEventsAll.find((e) => new Date(e.time).getTime() > now);
+    const past = tideEventsAll.filter((e) => new Date(e.time).getTime() <= now);
+    const prevEvent = past.length ? past[past.length - 1] : null;
+
+    if (nextEvent) {
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Next slack water"),
+        el("div", { class: "value" }, fmtTime(nextEvent.time)),
+        el("div", { class: "sub" }, nextEvent.type === "high"
+          ? `top of tide (${nextEvent.height.toFixed(1)} m)`
+          : `bottom of tide (${nextEvent.height.toFixed(1)} m)`)
+      ]));
+    }
+
+    if (prevEvent && nextEvent) {
+      const midMs = (new Date(prevEvent.time).getTime() + new Date(nextEvent.time).getTime()) / 2;
+      const flowType = (prevEvent.type === "low" && nextEvent.type === "high")
+        ? "flooding (incoming)"
+        : "ebbing (outgoing)";
+      const peakRange = Math.abs(nextEvent.height - prevEvent.height);
+      // Sinusoidal approx: peak current speed ≈ π × range ÷ cycle period.
+      // A semidiurnal half-cycle is ~6.21h. Convert m/h → m/s → knots.
+      const peakMps = (Math.PI * peakRange) / (6.21 * 3600);
+      const peakKt = peakMps * 1.94384;
+      const past6h = (Date.now() - midMs) < 0
+        ? `peaks in ${Math.round((midMs - Date.now()) / 60000)} min`
+        : `peaked ${Math.round((Date.now() - midMs) / 60000)} min ago`;
+      const peakedStr = Math.abs(Date.now() - midMs) < 3 * 60 * 60 * 1000
+        ? fmtTime(new Date(midMs).toISOString())
+        : fmtTime(new Date(midMs).toISOString());
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Peak flow"),
+        el("div", { class: "value" }, peakedStr),
+        el("div", { class: "sub" }, `~${peakKt.toFixed(1)} kt · ${flowType}`)
+      ]));
+    }
+  }
+
+  // -------- Barometric trend --------
+  if (hourly?.pressure_msl) {
+    const now = Date.now();
+    let nowIdx = 0;
+    for (let i = 0; i < hourly.time.length; i++) {
+      if (new Date(hourly.time[i]).getTime() >= now - 30 * 60 * 1000) { nowIdx = i; break; }
+    }
+    const past6Idx  = Math.max(0, nowIdx - 6);
+    const next12Idx = Math.min(hourly.time.length - 1, nowIdx + 12);
+    const nowP    = hourly.pressure_msl[nowIdx];
+    const pastP   = hourly.pressure_msl[past6Idx];
+    const futureP = hourly.pressure_msl[next12Idx];
+    const past6Delta  = (nowP != null && pastP != null) ? nowP - pastP : null;
+    const next12Delta = (futureP != null && nowP != null) ? futureP - nowP : null;
+
+    let arrow = "→", cls = "", note = "steady";
+    const t = next12Delta;
+    if (t != null) {
+      if      (t >  4) { arrow = "↗↗"; cls = "up";        note = "rising fast — fish often active"; }
+      else if (t >  1) { arrow = "↗";  cls = "up";        note = "rising — classic good-bite signal"; }
+      else if (t < -4) { arrow = "↘↘"; cls = "fastdown";  note = "falling fast — front coming, bite often shuts after"; }
+      else if (t < -1) { arrow = "↘";  cls = "down";      note = "falling — feed window often 6–12h before front"; }
+      else             { arrow = "→";  cls = "";          note = "steady — settled conditions"; }
+    }
+
+    // 24h sparkline — past 6h + next 18h of pressure for visual context.
+    const sparkStart = Math.max(0, nowIdx - 6);
+    const sparkEnd = Math.min(hourly.time.length, nowIdx + 18);
+    const pts = [];
+    for (let i = sparkStart; i < sparkEnd; i++) {
+      if (hourly.pressure_msl[i] != null) pts.push(hourly.pressure_msl[i]);
+    }
+    let sparkHTML = "";
+    if (pts.length >= 4) {
+      const pMin = Math.min(...pts), pMax = Math.max(...pts);
+      const pad = Math.max(0.5, (pMax - pMin) * 0.15);
+      const yMin = pMin - pad, yMax = pMax + pad;
+      const W = 180, H = 32;
+      let d = "";
+      for (let i = 0; i < pts.length; i++) {
+        const x = (i / (pts.length - 1)) * W;
+        const y = H - ((pts[i] - yMin) / (yMax - yMin)) * H;
+        d += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+      }
+      const nowOffset = Math.min(pts.length - 1, 6);
+      const cx = (nowOffset / (pts.length - 1)) * W;
+      const cy = H - ((pts[nowOffset] - yMin) / (yMax - yMin)) * H;
+      const strokeColor = cls === "up" ? "#6fdc8c"
+        : cls === "down" ? "#ffc26b"
+        : cls === "fastdown" ? "#ff7a7a"
+        : "#7cc4e8";
+      sparkHTML = `<svg class="pressure-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+        <path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="2.5" fill="${strokeColor}"/>
+      </svg>`;
+    }
+
+    wrap.appendChild(el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, "Pressure trend"),
+      el("div", { class: "value bar-trend " + cls }, nowP != null ? `${arrow} ${Math.round(nowP)} hPa` : "—"),
+      el("div", { class: "spark-wrap", html: sparkHTML }),
+      el("div", { class: "sub" },
+        (past6Delta != null ? `${past6Delta > 0 ? "+" : ""}${past6Delta.toFixed(1)} past 6h · ` : "") +
+        (next12Delta != null ? `${next12Delta > 0 ? "+" : ""}${next12Delta.toFixed(1)} next 12h — ${note}` : note))
+    ]));
+  }
+
+  // -------- Combo windows today (dawn/dusk × tide × solunar) --------
+  const todayWindows = computeFishingWindows(spot, daily, tideEventsAll, solunar);
+  if (todayWindows.length) {
+    for (const w of todayWindows) {
+      windowsWrap.appendChild(el("div", { class: "fwin" + (w.gold ? " gold" : "") }, [
+        el("div", {}, [w.gold ? "★ " : "• ", w.title]),
+        el("span", { class: "why" }, w.why)
+      ]));
+    }
+    headline.textContent = `· ${todayWindows.length} window${todayWindows.length > 1 ? "s" : ""} today`;
+  } else {
+    windowsWrap.appendChild(el("div", { class: "fwin" }, [
+      "No standout windows today — fish the changes anyway."
+    ]));
+  }
+}
+
+// Returns an array of named fishing windows for today, ranked by overlap of
+// dawn/dusk × tide turn × solunar major.
+function computeFishingWindows(spot, daily, tideEvents, solunar) {
+  const out = [];
+  const today = new Date();
+  const dayKey = today.toDateString();
+
+  // Prefer real solunar.org times when available.
+  const useApi = !!(solunar && solunar.majorA?.start);
+  const sunrise = useApi && solunar.sunRise
+    ? solunar.sunRise
+    : (daily.sunrise?.[0] ? new Date(daily.sunrise[0]) : null);
+  const sunset = useApi && solunar.sunSet
+    ? solunar.sunSet
+    : (daily.sunset?.[0] ? new Date(daily.sunset[0]) : null);
+  const solWin = useApi
+    ? {
+        majorA: { start: solunar.majorA.start, end: solunar.majorA.end },
+        majorB: { start: solunar.majorB.start, end: solunar.majorB.end },
+        minorA: { start: solunar.minorA.start, end: solunar.minorA.end },
+        minorB: { start: solunar.minorB.start, end: solunar.minorB.end }
+      }
+    : solunarWindows(today, spot.lon);
+
+  const todayEvents = tideEvents.filter(
+    (e) => new Date(e.time).toDateString() === dayKey
+  );
+
+  const minutesBetween = (a, b) => Math.abs(a.getTime() - b.getTime()) / 60000;
+
+  // 1. Dawn × tide turn (snapper gold)
+  if (sunrise) {
+    for (const ev of todayEvents) {
+      const evT = new Date(ev.time);
+      const gap = minutesBetween(sunrise, evT);
+      if (gap < 90) {
+        out.push({
+          title: `Dawn ${ev.type === "high" ? "high" : "low"} tide — ${fmtTime(sunrise.toISOString())} → ${fmtTime(new Date(sunrise.getTime() + 90 * 60000).toISOString())}`,
+          why: `Sunrise within ${Math.round(gap)} min of ${ev.type} tide. Classic snapper window.`,
+          gold: true
+        });
+      }
+    }
+  }
+
+  // 2. Dusk × tide turn
+  if (sunset) {
+    for (const ev of todayEvents) {
+      const evT = new Date(ev.time);
+      const gap = minutesBetween(sunset, evT);
+      if (gap < 90) {
+        out.push({
+          title: `Dusk ${ev.type === "high" ? "high" : "low"} tide — ${fmtTime(new Date(sunset.getTime() - 90 * 60000).toISOString())} → ${fmtTime(sunset.toISOString())}`,
+          why: `Sunset within ${Math.round(gap)} min of ${ev.type} tide. Often a kingie bite, especially on low.`,
+          gold: true
+        });
+      }
+    }
+  }
+
+  // 3. Solunar major × tide turn (peak compound)
+  for (const win of [solWin.majorA, solWin.majorB]) {
+    for (const ev of todayEvents) {
+      const evT = new Date(ev.time);
+      if (evT >= win.start && evT <= win.end) {
+        out.push({
+          title: `Solunar major on the tide turn — ${fmtTime(win.start.toISOString())} → ${fmtTime(win.end.toISOString())}`,
+          why: `Lunar peak coincides with ${ev.type} tide. Best of all signals lining up.`,
+          gold: true
+        });
+      }
+    }
+  }
+
+  // 4. Solunar major during daylight (worth noting if no compound found)
+  if (out.length === 0 && sunrise && sunset) {
+    for (const win of [solWin.majorA, solWin.majorB]) {
+      if (win.end > sunrise && win.start < sunset) {
+        out.push({
+          title: `Solunar major — ${fmtTime(win.start.toISOString())} → ${fmtTime(win.end.toISOString())}`,
+          why: `Lunar peak during daylight.`,
+          gold: false
+        });
+      }
+    }
+  }
+
+  // Dedupe by title and keep the goldest version.
+  const seen = new Map();
+  for (const w of out) {
+    const prev = seen.get(w.title);
+    if (!prev || (w.gold && !prev.gold)) seen.set(w.title, w);
+  }
+  return Array.from(seen.values()).sort((a, b) => (b.gold - a.gold));
+}
+
+// ---------- Wind detail (gust ratios, shifts) ----------
+
+function renderWind(h) {
+  const wrap = $("#windDetail");
+  const shiftWrap = $("#windShift");
+  const headline = $("#windHeadline");
+  wrap.innerHTML = "";
+  shiftWrap.innerHTML = "";
+
+  const now = Date.now();
+  let s = 0;
+  for (let i = 0; i < h.time.length; i++) {
+    if (new Date(h.time[i]).getTime() >= now - 30 * 60 * 1000) { s = i; break; }
+  }
+  const e = Math.min(s + 24, h.time.length);
+
+  const winds = h.wind_speed_10m.slice(s, e);
+  const gusts = h.wind_gusts_10m.slice(s, e);
+  const dirs  = h.wind_direction_10m.slice(s, e);
+  const times = h.time.slice(s, e);
+
+  const meanWind = mean(winds);
+  const peakGustVal = Math.max(...gusts.filter((x) => x != null));
+  const peakIdx = gusts.findIndex((g) => g === peakGustVal);
+  const peakTime = peakIdx >= 0 ? times[peakIdx] : null;
+
+  // Gust ratio over next 24h: average gust / average wind (avoids div-by-zero on light air).
+  const meanGust = mean(gusts);
+  const ratio = meanWind > 1 ? meanGust / meanWind : null;
+
+  let ratioClass = "";
+  let ratioNote = "smooth";
+  if (ratio != null) {
+    if (ratio < 1.3) { ratioClass = ""; ratioNote = "smooth wind"; }
+    else if (ratio < 1.5) { ratioClass = ""; ratioNote = "typical"; }
+    else if (ratio < 1.8) { ratioClass = "high"; ratioNote = "gusty — reef early"; }
+    else { ratioClass = "veryhigh"; ratioNote = "very gusty / squally"; }
+  }
+
+  // Now wind for headline.
+  const nowWind = winds[0], nowGust = gusts[0], nowDir = dirs[0];
+  headline.textContent = nowWind != null
+    ? `· ${fmtWind(nowWind)} ${compass(nowDir)} now, gust ${fmtWind(nowGust)}`
+    : "";
+
+  wrap.append(
+    el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, "Next 24h mean"),
+      el("div", { class: "value" }, fmtWind(meanWind)),
+      el("div", { class: "sub" }, `gust avg ${fmtWind(meanGust)}`)
+    ]),
+    el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, "Peak gust"),
+      el("div", { class: "value" }, fmtWind(peakGustVal)),
+      el("div", { class: "sub" }, peakTime ? `at ${fmtTime(peakTime)}` : "—")
+    ]),
+    el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, "Gust ratio"),
+      el("div", { class: "value " + ("ratio " + ratioClass) }, ratio != null ? "×" + ratio.toFixed(2) : "—"),
+      el("div", { class: "sub" }, ratioNote)
+    ]),
+    el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, "Dominant direction"),
+      el("div", { class: "value" }, compass(circularMean(dirs))),
+      el("div", { class: "sub" }, `from ${Math.round(circularMean(dirs) || 0)}°`)
+    ])
+  );
+
+  // Wind shift detection: scan for the largest direction change in any 3h window.
+  let biggestShift = 0;
+  let shiftAt = null;
+  let shiftFrom = null, shiftTo = null;
+  for (let i = 0; i < dirs.length - 3; i++) {
+    if (dirs[i] == null || dirs[i + 3] == null) continue;
+    const d = angDiff(dirs[i], dirs[i + 3]);
+    if (Math.abs(d) > Math.abs(biggestShift)) {
+      biggestShift = d;
+      shiftAt = times[i + 3];
+      shiftFrom = dirs[i];
+      shiftTo = dirs[i + 3];
+    }
+  }
+
+  if (Math.abs(biggestShift) >= 30) {
+    const cls = Math.abs(biggestShift) >= 60 ? "shift-alert big" : "shift-alert";
+    const sign = biggestShift > 0 ? "→" : "←";
+    shiftWrap.appendChild(el("div", { class: cls }, [
+      `Wind shift: ${compass(shiftFrom)} ${sign} ${compass(shiftTo)} (${Math.round(Math.abs(biggestShift))}°) around ${fmtTime(shiftAt)}`
+    ]));
+  } else {
+    shiftWrap.appendChild(el("div", { class: "shift-alert calm" }, [
+      `Direction steady — under 30° shift expected in next 24h.`
+    ]));
+  }
+}
+
+// Signed angular difference in degrees (shortest path, -180..+180).
+function angDiff(a, b) {
+  let d = ((b - a + 540) % 360) - 180;
+  return d;
+}
+
+// ---------- Cross-check external links ----------
+
+function renderXLinks(spot) {
+  const wrap = $("#xlinks");
+  wrap.innerHTML = "";
+  const lat = spot.lat, lon = spot.lon;
+
+  const links = [
+    {
+      name: "Swellmap",
+      color: "#3aa7d4",
+      url: `https://www.swellmap.co.nz/`
+    },
+    {
+      name: "MetService Marine",
+      color: "#0072c6",
+      url: `https://www.metservice.com/marine/regions`
+    },
+    {
+      name: "Windy",
+      color: "#ff7733",
+      url: `https://www.windy.com/?wind,${lat.toFixed(3)},${lon.toFixed(3)},10`
+    },
+    {
+      name: "PredictWind",
+      color: "#1a4b8c",
+      url: `https://forecast.predictwind.com/maps/forecast/wind/${lat.toFixed(3)},${lon.toFixed(3)}`
+    },
+    {
+      name: "Windguru",
+      color: "#5b8def",
+      url: `https://www.windguru.cz/map/?lat=${lat.toFixed(3)}&lon=${lon.toFixed(3)}`
+    },
+    {
+      name: "Surfline",
+      color: "#00a3e0",
+      url: `https://www.surfline.com/surf-reports-forecasts-cams/new-zealand/6252001`
+    }
+  ];
+
+  for (const l of links) {
+    wrap.appendChild(el("a", {
+      class: "xlink",
+      href: l.url,
+      target: "_blank",
+      rel: "noopener"
+    }, [
+      el("span", { class: "dot", style: `background:${l.color}` }),
+      l.name
+    ]));
+  }
+}
+
+function renderHero(h, marine, daily, dailyScores) {
+  // Pick the upcoming hour.
+  const now = Date.now();
+  let idx = 0;
+  for (let i = 0; i < h.time.length; i++) {
+    if (new Date(h.time[i]).getTime() >= now - 30 * 60 * 1000) { idx = i; break; }
+  }
+  const cur = sliceHour(h, idx);
+  const mIdx = marine ? indexAtTime(marine.hourly.time, h.time[idx]) : -1;
+  const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
+
+  const verdict = hourVerdict(cur, mCur);
+  const sunrise = daily.sunrise?.[0];
+  const sunset = daily.sunset?.[0];
+  const best = bestWindowToday(h, marine?.hourly, sunrise, sunset);
+
+  const light = $("#verdict .verdict-light");
+  light.dataset.state = verdict;
+  const headlines = {
+    green: "Looking good out there",
+    amber: "Workable, with care",
+    red: "Best to stay in today"
+  };
+  $("#verdictHeadline").textContent = headlines[verdict];
+
+  let detail = "";
+  if (best) {
+    detail = `Best window today: ${fmtTime(best.start)} – ${fmtTime(best.end)}`;
+  } else if (verdict === "green") {
+    detail = "All thresholds clear right now.";
+  } else {
+    const breaches = [];
+    const t = state.thresholds;
+    if ((cur.wind_speed_10m || 0) * KMH_TO_KT > t.maxWindKt) breaches.push("wind");
+    if ((cur.wind_gusts_10m || 0) * KMH_TO_KT > t.maxGustKt) breaches.push("gusts");
+    if ((mCur?.wave_height || 0) > t.maxWaveM) breaches.push("waves");
+    if ((cur.precipitation || 0) > t.maxRainMm) breaches.push("rain");
+    detail = breaches.length ? `Over your limit: ${breaches.join(", ")}.` : "Mixed conditions.";
+  }
+  $("#verdictDetail").textContent = detail;
+
+  // Score chip — single 0-100 number for "now". Uses today's daily score so
+  // the hero agrees with the 7-day badge and Best-day card.
+  const todayScore = dailyScores && dailyScores[0] ? dailyScores[0].score : null;
+  let chip = $("#verdictScore");
+  if (!chip) {
+    chip = el("div", { id: "verdictScore", class: "verdict-score" });
+    $("#verdict").appendChild(chip);
+  }
+  if (todayScore != null) {
+    chip.innerHTML = "";
+    const cls = todayScore >= 70 ? "high" : todayScore >= 45 ? "mid" : "low";
+    chip.className = "verdict-score " + cls;
+    chip.append(
+      el("div", { class: "n" }, String(todayScore)),
+      el("div", { class: "of" }, "/100")
+    );
+  }
+
+  // Quick-status pills row: tide direction, UV, moon. Tight summary strip
+  // below the verdict, before the now-stats. Reused from Tight-Lines hero.
+  let pills = $("#quickPills");
+  if (!pills) {
+    pills = el("div", { id: "quickPills", class: "quick-pills" });
+    $(".hero").insertBefore(pills, $("#nowStats"));
+  }
+  pills.innerHTML = "";
+  const tidePill = nextTidePillText(marine);
+  if (tidePill) pills.appendChild(el("span", { class: "qpill tide" }, tidePill));
+  const uv = daily.uv_index_max?.[0];
+  if (uv != null) {
+    const uvLabel = uv >= 8 ? "Very high" : uv >= 6 ? "High" : uv >= 3 ? "Moderate" : "Low";
+    pills.appendChild(el("span", { class: "qpill uv" }, `UV ${Math.round(uv)} · ${uvLabel}`));
+  }
+  const ill = moonIllumination(moonPhase(new Date()));
+  pills.appendChild(el("span", { class: "qpill moon" }, `Moon ${ill}%`));
+
+  const code = cur.weather_code != null ? Math.round(cur.weather_code) : 0;
+  const [icon, label] = wmo(code);
+  const stats = $("#nowStats");
+  stats.innerHTML = "";
+  stats.append(
+    statTile("Now", `${icon} ${fmtTemp(cur.temperature_2m)}`, label),
+    statTile("Wind", fmtWind(cur.wind_speed_10m), `${compass(cur.wind_direction_10m)} · gust ${fmtWind(cur.wind_gusts_10m)}`),
+    statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
+    statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : "")
+  );
+}
+
+// "↑ Rising 1.8m" / "↓ Falling 0.3m" based on next tide event.
+function nextTidePillText(marine) {
+  if (!marine?.hourly?.sea_level_height_msl) return null;
+  const events = extractTideEvents(marine.hourly.time, marine.hourly.sea_level_height_msl, false);
+  const now = Date.now();
+  const next = events.find((e) => new Date(e.time).getTime() > now);
+  if (!next) return null;
+  const arrow = next.type === "high" ? "↑" : "↓";
+  const word = next.type === "high" ? "Rising" : "Falling";
+  return `${arrow} ${word} · ${fmtTime(next.time)}`;
+}
+
+function statTile(label, value, sub = "") {
+  return el("div", { class: "stat" }, [
+    el("div", { class: "label" }, label),
+    el("div", { class: "value" }, value),
+    el("div", { class: "sub" }, sub)
+  ]);
+}
+
+function renderHourly(h, marine) {
+  const wrap = $("#hourly");
+  wrap.innerHTML = "";
+  const now = Date.now();
+  let start = 0;
+  for (let i = 0; i < h.time.length; i++) {
+    if (new Date(h.time[i]).getTime() >= now - 30 * 60 * 1000) { start = i; break; }
+  }
+  const end = Math.min(start + 48, h.time.length);
+
+  let agreeSum = 0, agreeN = 0;
+  for (let i = start; i < end; i++) {
+    const cur = sliceHour(h, i);
+    const mIdx = marine ? indexAtTime(marine.hourly.time, h.time[i]) : -1;
+    const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
+    const v = hourVerdict(cur, mCur);
+    const code = cur.weather_code != null ? Math.round(cur.weather_code) : 0;
+    const [icon] = wmo(code);
+    const range = (h.temperature_2m_max[i] != null && h.temperature_2m_min[i] != null)
+      ? (h.temperature_2m_max[i] - h.temperature_2m_min[i])
+      : 0;
+    agreeSum += range; agreeN++;
+    const score = hourScore(cur, mCur);
+    const scoreCls = score >= 70 ? "high" : score >= 45 ? "mid" : "low";
+    const hour = el("div", { class: "hour " + (v === "green" ? "good" : v === "amber" ? "warn" : "bad") }, [
+      el("div", { class: "t" }, fmtHour(h.time[i])),
+      el("div", { class: "icon" }, icon),
+      el("div", { class: "temp" }, fmtTemp(cur.temperature_2m)),
+      el("div", { class: "wind" }, fmtWind(cur.wind_speed_10m) + " " + compass(cur.wind_direction_10m)),
+      el("div", { class: "wave" }, mCur?.wave_height != null ? fmtWave(mCur.wave_height) : "—"),
+      el("div", { class: "hour-bar " + scoreCls }, [
+        el("div", { class: "fill", style: `width:${Math.max(4, score)}%` })
+      ]),
+      el("div", { class: "hour-score " + scoreCls }, String(score))
+    ]);
+    wrap.appendChild(hour);
+  }
+  const avg = agreeN ? (agreeSum / agreeN) : 0;
+  $("#hourlyAgreement").textContent = avg < 1.5 ? "· models agree" : avg < 3 ? "· some divergence" : "· models disagree";
+}
+
+function renderDaily(daily, hourly, marine, spot, dailyScores) {
+  const wrap = $("#daily");
+  wrap.innerHTML = "";
+  for (let i = 0; i < daily.time.length; i++) {
+    const code = daily.weather_code?.[i] != null ? Math.round(daily.weather_code[i]) : 0;
+    const [icon, label] = wmo(code);
+    const hi = daily.temperature_2m_max?.[i];
+    const lo = daily.temperature_2m_min?.[i];
+    const windMax = daily.wind_speed_10m_max?.[i];
+    const rain = daily.precipitation_sum?.[i];
+    // Aggregate hour verdicts for that calendar day (used for the dot colour).
+    const dayKey = daily.time[i];
+    let g = 0, a = 0, r = 0;
+    for (let j = 0; j < hourly.time.length; j++) {
+      if (!hourly.time[j].startsWith(dayKey)) continue;
+      const cur = sliceHour(hourly, j);
+      const mIdx = marine ? indexAtTime(marine.hourly.time, hourly.time[j]) : -1;
+      const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
+      const t = new Date(hourly.time[j]);
+      if (t.getHours() < 6 || t.getHours() > 20) continue;
+      const v = hourVerdict(cur, mCur);
+      if (v === "green") g++; else if (v === "amber") a++; else r++;
+    }
+    const dayState = g > (a + r) ? "green" : r > g ? "red" : "amber";
+    const dotColor = { green: "var(--green)", amber: "var(--amber)", red: "var(--red)" }[dayState];
+
+    const sObj = dailyScores?.[i];
+    const score = sObj?.score;
+    const scoreCls = score == null ? "" : score >= 70 ? "high" : score >= 45 ? "mid" : "low";
+    const peakText = sObj?.peakStart && sObj?.peakEnd
+      ? `${fmtTime(sObj.peakStart.toISOString())} – ${fmtTime(sObj.peakEnd.toISOString())}`
+      : "—";
+
+    const row = el("div", { class: "day" }, [
+      el("div", { class: "name" }, [
+        el("span", { class: "day-verdict", style: `background:${dotColor}` }),
+        fmtDayName(daily.time[i])
+      ]),
+      el("div", { class: "icon", title: label }, icon),
+      el("div", { class: "range" }, [
+        el("span", { class: "high" }, hi != null ? fmtTemp(hi) : "—"),
+        " / ",
+        el("span", { class: "low" }, lo != null ? fmtTemp(lo) : "—")
+      ]),
+      el("div", { class: "peak" }, [
+        el("span", { class: "peak-label" }, "Peak"),
+        " ",
+        el("span", { class: "peak-time" }, peakText)
+      ]),
+      score != null
+        ? el("div", { class: "day-score " + scoreCls }, String(score))
+        : el("div", { class: "extra" }, ["Wind ", fmtWind(windMax)])
+    ]);
+    wrap.appendChild(row);
+  }
+}
+
+function renderTides(marine) {
+  const svg = $("#tideChart");
+  const wrap = $("#tideEvents");
+  svg.innerHTML = "";
+  wrap.innerHTML = "";
+  if (!marine?.hourly?.sea_level_height_msl) {
+    svg.innerHTML = `<text x="160" y="60" text-anchor="middle" fill="#7c97ad" font-size="12">No tide data for this location</text>`;
+    return;
+  }
+  const times = marine.hourly.time;
+  const heights = marine.hourly.sea_level_height_msl;
+
+  // Plot today's 24h.
+  const today = new Date();
+  const dayKey = today.toDateString();
+  const idxs = [];
+  for (let i = 0; i < times.length; i++) {
+    if (new Date(times[i]).toDateString() === dayKey) idxs.push(i);
+  }
+  if (!idxs.length) return;
+  const ys = idxs.map((i) => heights[i]).filter((v) => v != null);
+  if (!ys.length) return;
+  const yMin = Math.min(...ys);
+  const yMax = Math.max(...ys);
+  const yPad = Math.max(0.2, (yMax - yMin) * 0.15);
+  const W = 320, H = 120, pad = 12;
+  const xFor = (i) => pad + (i / (idxs.length - 1)) * (W - 2 * pad);
+  const yFor = (v) => H - pad - ((v - (yMin - yPad)) / ((yMax + yPad) - (yMin - yPad))) * (H - 2 * pad);
+
+  // Background gradient
+  svg.insertAdjacentHTML("beforeend",
+    `<defs>
+       <linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">
+         <stop offset="0" stop-color="#7cc4e8" stop-opacity="0.35"/>
+         <stop offset="1" stop-color="#7cc4e8" stop-opacity="0"/>
+       </linearGradient>
+     </defs>`);
+
+  // Path
+  let d = "";
+  for (let k = 0; k < idxs.length; k++) {
+    const v = heights[idxs[k]];
+    if (v == null) continue;
+    const x = xFor(k), y = yFor(v);
+    d += (k === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+  }
+  const area = d + `L ${xFor(idxs.length - 1).toFixed(1)} ${H - pad} L ${pad} ${H - pad} Z`;
+  svg.insertAdjacentHTML("beforeend",
+    `<path d="${area}" fill="url(#tg)"/>
+     <path d="${d}" fill="none" stroke="#7cc4e8" stroke-width="2"/>`);
+
+  // Now line
+  const nowMs = Date.now();
+  for (let k = 0; k < idxs.length; k++) {
+    const t = new Date(times[idxs[k]]).getTime();
+    if (t >= nowMs - 30 * 60 * 1000) {
+      const x = xFor(k);
+      svg.insertAdjacentHTML("beforeend",
+        `<line x1="${x}" y1="${pad}" x2="${x}" y2="${H - pad}" stroke="#ffd47a" stroke-width="1" stroke-dasharray="2 3"/>`);
+      break;
+    }
+  }
+
+  // Events
+  const events = extractTideEvents(times, heights, true);
+  for (const ev of events) {
+    wrap.appendChild(el("div", { class: `tide-event ${ev.type}` }, [
+      `${ev.type === "high" ? "▲ High" : "▼ Low"} ${fmtTime(ev.time)} (${ev.height.toFixed(1)}m)`
+    ]));
+  }
+  if (!events.length) {
+    wrap.appendChild(el("div", { class: "muted small" }, "No tide turns within today."));
+  }
+}
+
+function renderSwell(marine, hourly) {
+  const wrap = $("#swell");
+  wrap.innerHTML = "";
+  if (!marine) {
+    wrap.appendChild(el("div", { class: "muted small" }, "No marine data for this point."));
+    return;
+  }
+  const now = Date.now();
+  const times = marine.hourly.time;
+  let idx = 0;
+  for (let i = 0; i < times.length; i++) {
+    if (new Date(times[i]).getTime() >= now - 30 * 60 * 1000) { idx = i; break; }
+  }
+  const m = sliceHour(marine.hourly, idx);
+  const items = [
+    {
+      label: "Significant wave",
+      value: fmtWave(m.wave_height),
+      sub: m.wave_period != null ? `${m.wave_period.toFixed(0)}s period` : ""
+    },
+    {
+      label: "Primary swell",
+      value: fmtWave(m.swell_wave_height),
+      sub: `${compass(m.swell_wave_direction)} · ${m.swell_wave_period?.toFixed(0) ?? "—"}s`
+    },
+    {
+      label: "Wind chop",
+      value: fmtWave(m.wind_wave_height),
+      sub: m.wind_wave_height != null ? "" : "—"
+    },
+    {
+      label: "Sea surface",
+      value: fmtTemp(m.sea_surface_temperature),
+      sub: m.sea_level_height_msl != null ? `tide ${m.sea_level_height_msl >= 0 ? "+" : ""}${m.sea_level_height_msl.toFixed(2)}m MSL` : ""
+    }
+  ];
+  for (const it of items) {
+    wrap.appendChild(el("div", { class: "swell-item" }, [
+      el("div", { class: "label" }, it.label),
+      el("div", { class: "value" }, it.value),
+      el("div", { class: "sub" }, it.sub)
+    ]));
+  }
+}
+
+function renderSolunar(spot, daily, air, solunar) {
+  const wrap = $("#solunar");
+  wrap.innerHTML = "";
+  const today = new Date();
+
+  // Prefer api.solunar.org data when present, fall back to client-side calc.
+  const useApi = !!(solunar && solunar.majorA?.start);
+  const phase = moonPhase(today);
+  const ill = useApi && solunar.moonIllumination != null
+    ? Math.round(solunar.moonIllumination * 100)
+    : moonIllumination(phase);
+  const name = useApi && solunar.moonPhase ? solunar.moonPhase : moonPhaseName(phase);
+  const w = useApi ? solunar : solunarWindows(today, spot.lon);
+
+  // Sunrise / sunset — prefer API, fall back to Open-Meteo daily.
+  const sunrise = useApi && solunar.sunRise ? solunar.sunRise.toISOString() : daily.sunrise?.[0];
+  const sunset  = useApi && solunar.sunSet  ? solunar.sunSet.toISOString()  : daily.sunset?.[0];
+  const uv = daily.uv_index_max?.[0];
+
+  // Day rating from local astronomy (api.solunar.org is CORS-blocked).
+  const score = useApi && solunar.dayRating != null
+    ? Math.round(solunar.dayRating)
+    : solunarDayScore(today, spot.lon, sunrise, sunset);
+
+  // PM2.5 (air quality) at current hour, if available.
+  let pm25 = null;
+  if (air?.hourly?.pm2_5) {
+    const idx = air.hourly.time.findIndex((t) => new Date(t).getTime() >= Date.now() - 30 * 60 * 1000);
+    pm25 = idx >= 0 ? air.hourly.pm2_5[idx] : air.hourly.pm2_5[0];
+  }
+
+  const moonExtra = useApi && solunar.moonRise && solunar.moonSet
+    ? `moon ${fmtTime(solunar.moonRise.toISOString())} – ${fmtTime(solunar.moonSet.toISOString())}`
+    : `${ill}% illuminated`;
+
+  // Civil twilight approximation — sunrise -30min and sunset +30min. Good
+  // enough for the dawn/dusk quad most fishing apps show.
+  const dawn = sunrise ? new Date(new Date(sunrise).getTime() - 30 * 60 * 1000).toISOString() : null;
+  const dusk = sunset ? new Date(new Date(sunset).getTime() + 30 * 60 * 1000).toISOString() : null;
+  const sunQuad = el("div", { class: "solunar-card sun-quad" }, [
+    el("div", { class: "label" }, "Sun & light"),
+    el("div", { class: "quad" }, [
+      quadCell("Dawn",    dawn    ? fmtTime(dawn)    : "—"),
+      quadCell("Sunrise", sunrise ? fmtTime(sunrise) : "—"),
+      quadCell("Sunset",  sunset  ? fmtTime(sunset)  : "—"),
+      quadCell("Dusk",    dusk    ? fmtTime(dusk)    : "—")
+    ]),
+    el("div", { class: "sub" }, uv != null ? `UV peak ${uv.toFixed(0)}` : "")
+  ]);
+
+  wrap.append(
+    sunQuad,
+    cardTile("Moon", `${moonSvg(phase)} ${name}`, `${ill}% · ${moonExtra}`),
+    cardTile("Day rating", score + " / 100", scoreLabel(score)),
+    cardTile("Air quality", pm25 != null ? `PM2.5 ${pm25.toFixed(0)} µg/m³` : "—", pm25 != null ? aqLabel(pm25) : "")
+  );
+}
+
+function quadCell(label, value) {
+  return el("div", { class: "quad-cell" }, [
+    el("div", { class: "quad-label" }, label),
+    el("div", { class: "quad-value" }, value)
+  ]);
+}
+
+// Accept either a Date or an ISO string and return an ISO string.
+function toIso(t) {
+  if (t == null) return null;
+  if (t instanceof Date) return t.toISOString();
+  return t;
+}
+
+function cardTile(label, value, sub = "") {
+  return el("div", { class: "solunar-card" }, [
+    el("div", { class: "label" }, label),
+    el("div", { class: "value", html: value }),
+    el("div", { class: "sub" }, sub)
+  ]);
+}
+
+function scoreLabel(s) {
+  if (s >= 75) return "Excellent — peak lunar influence";
+  if (s >= 55) return "Good — worth a try";
+  if (s >= 35) return "Fair";
+  return "Quiet day";
+}
+function aqLabel(pm) {
+  if (pm < 12) return "Good";
+  if (pm < 35) return "Moderate";
+  if (pm < 55) return "Sensitive groups";
+  return "Unhealthy";
+}
+
+function moonSvg(phase) {
+  // Render a phase circle.
+  const r = 14;
+  const cx = 16, cy = 16;
+  // Terminator: an ellipse of width proportional to cos(2π·phase).
+  const ang = phase * 2 * Math.PI;
+  const cosA = Math.cos(ang);
+  const isWaxing = phase < 0.5;
+  const rx = Math.abs(cosA) * r;
+  const left = isWaxing
+    ? `<path d="M ${cx} ${cy - r} A ${rx} ${r} 0 0 ${cosA > 0 ? 0 : 1} ${cx} ${cy + r} A ${r} ${r} 0 0 1 ${cx} ${cy - r} Z" fill="#ffd47a"/>`
+    : `<path d="M ${cx} ${cy - r} A ${rx} ${r} 0 0 ${cosA > 0 ? 1 : 0} ${cx} ${cy + r} A ${r} ${r} 0 0 0 ${cx} ${cy - r} Z" fill="#ffd47a"/>`;
+  return `<svg class="moon-svg" viewBox="0 0 32 32" aria-hidden="true">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="#243a55"/>
+    ${left}
+  </svg>`;
+}
+
+function renderAgreement(h) {
+  const wrap = $("#agreement");
+  wrap.innerHTML = "";
+  // Show next-24h averages with spread bars for key metrics.
+  const now = Date.now();
+  let s = 0;
+  for (let i = 0; i < h.time.length; i++) {
+    if (new Date(h.time[i]).getTime() >= now - 30 * 60 * 1000) { s = i; break; }
+  }
+  const e = Math.min(s + 24, h.time.length);
+  const metrics = [
+    { key: "temperature_2m", label: "Temperature", fmt: (v) => fmtTemp(v) },
+    { key: "wind_speed_10m", label: "Wind speed",   fmt: (v) => fmtWind(v) },
+    { key: "wind_gusts_10m", label: "Gusts",        fmt: (v) => fmtWind(v) },
+    { key: "precipitation",  label: "Precipitation", fmt: (v) => fmtMm(v) },
+    { key: "cloud_cover",    label: "Cloud cover",  fmt: (v) => fmtPct(v) },
+    { key: "pressure_msl",   label: "Pressure",     fmt: (v) => v != null ? Math.round(v) + " hPa" : "—" }
+  ];
+  for (const m of metrics) {
+    const means = h[m.key].slice(s, e);
+    const mins  = h[m.key + "_min"].slice(s, e);
+    const maxs  = h[m.key + "_max"].slice(s, e);
+    const meanAvg = mean(means);
+    const minAvg  = mean(mins);
+    const maxAvg  = mean(maxs);
+    if (meanAvg == null) continue;
+    // Build bar with absolute scale within this metric.
+    const lo = Math.min(...mins.filter((x) => x != null), meanAvg);
+    const hi = Math.max(...maxs.filter((x) => x != null), meanAvg);
+    const span = Math.max(1e-6, hi - lo);
+    const leftPct  = ((minAvg - lo) / span) * 100;
+    const rightPct = ((maxAvg - lo) / span) * 100;
+    const meanPct  = ((meanAvg - lo) / span) * 100;
+    wrap.appendChild(el("div", { class: "agree-row" }, [
+      el("div", { class: "label" }, m.label),
+      el("div", { class: "bar" }, [
+        el("div", { class: "bar-range", style: `left:${leftPct.toFixed(1)}%; right:${(100 - rightPct).toFixed(1)}%` }),
+        el("div", { class: "bar-mean",  style: `left:${meanPct.toFixed(1)}%` })
+      ]),
+      el("div", { class: "value" }, m.fmt(meanAvg))
+    ]));
+  }
+}
+
+// ---------- Refresh ----------
+
+async function refresh() {
+  renderSpotPicker();
+  const spot = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
+  if (!spot) return;
+  $("#spotName").textContent = spot.name;
+  $("#spotMeta").textContent = "Fetching forecasts…";
+  $("#verdictHeadline").textContent = "Reading the sky…";
+
+  try {
+    // NOTE: api.solunar.org is CORS-blocked for browsers — calls always fail.
+    // We rely on the local astronomy calculation (solunarWindows) instead. If
+    // we ever add a Netlify function to proxy solunar.org, re-enable here.
+    const [forecast, marine, air] = await Promise.all([
+      fetchForecast(spot),
+      fetchMarine(spot),
+      fetchAir(spot)
+    ]);
+    const agg = aggregateMultiModel(forecast);
+    if (!agg) throw new Error("No forecast data");
+    state.data = {
+      spot,
+      hourlyAgg: agg.hourly,
+      dailyAgg: agg.daily,
+      marine,
+      air,
+      solunar: null,
+      solunarTomorrow: null
+    };
+    renderAll();
+  } catch (err) {
+    console.error(err);
+    $("#verdictDetail").textContent = "Forecast unavailable — try again in a minute.";
+    toast(err.message || "Fetch error");
+  }
+}
+
+// ---------- Settings ----------
+
+function openSettings() {
+  $("#appVersionLabel").textContent = APP_VERSION;
+  $("#thMaxWind").value = state.thresholds.maxWindKt;
+  $("#thMaxGust").value = state.thresholds.maxGustKt;
+  $("#thMaxSwell").value = state.thresholds.maxWaveM;
+  $("#thMaxRain").value = state.thresholds.maxRainMm;
+  $("#thMinTemp").value = state.thresholds.minTempC;
+  $("#unitWind").value = state.units.wind;
+  $("#unitWave").value = state.units.wave;
+  $("#unitTemp").value = state.units.temp;
+  renderSpotList();
+  $("#settingsDialog").showModal();
+}
+
+function renderSpotList() {
+  const list = $("#spotList");
+  list.innerHTML = "";
+  for (const s of state.spots) {
+    if (s.id === "__gps__") continue;
+    const row = el("div", { class: "spot-row" }, [
+      el("span", {}, `${s.name} (${s.lat.toFixed(2)}, ${s.lon.toFixed(2)})`),
+      el("button", {
+        class: "rm",
+        type: "button",
+        onclick: () => {
+          state.spots = state.spots.filter((x) => x.id !== s.id);
+          saveJSON("spots", state.spots);
+          if (state.activeSpotId === s.id) {
+            state.activeSpotId = state.spots[0]?.id;
+            saveJSON("activeSpotId", state.activeSpotId);
+          }
+          renderSpotList();
+        }
+      }, "×")
+    ]);
+    list.appendChild(row);
+  }
+}
+
+function saveSettings() {
+  state.thresholds = {
+    maxWindKt: +$("#thMaxWind").value || DEFAULT_THRESHOLDS.maxWindKt,
+    maxGustKt: +$("#thMaxGust").value || DEFAULT_THRESHOLDS.maxGustKt,
+    maxWaveM:  +$("#thMaxSwell").value || DEFAULT_THRESHOLDS.maxWaveM,
+    maxRainMm: +$("#thMaxRain").value || DEFAULT_THRESHOLDS.maxRainMm,
+    minTempC:  +$("#thMinTemp").value || DEFAULT_THRESHOLDS.minTempC
+  };
+  state.units = {
+    wind: $("#unitWind").value,
+    wave: $("#unitWave").value,
+    temp: $("#unitTemp").value
+  };
+  saveJSON("thresholds", state.thresholds);
+  saveJSON("units", state.units);
+  toast("Saved");
+  refresh();
+}
+
+function addSpot() {
+  const name = $("#newSpotName").value.trim();
+  const lat = parseFloat($("#newSpotLat").value);
+  const lon = parseFloat($("#newSpotLon").value);
+  if (!name || Number.isNaN(lat) || Number.isNaN(lon)) {
+    toast("Need name + lat + lon");
+    return;
+  }
+  state.spots.push({ id: "u" + Date.now(), name, lat, lon });
+  saveJSON("spots", state.spots);
+  $("#newSpotName").value = "";
+  $("#newSpotLat").value = "";
+  $("#newSpotLon").value = "";
+  renderSpotList();
+  renderSpotPicker();
+}
+
+function resetSettings() {
+  if (!confirm("Reset thresholds, units and spots to defaults?")) return;
+  state.thresholds = structuredClone(DEFAULT_THRESHOLDS);
+  state.units = structuredClone(DEFAULT_UNITS);
+  state.spots = structuredClone(DEFAULT_SPOTS);
+  state.activeSpotId = DEFAULT_SPOTS[0].id;
+  saveJSON("thresholds", state.thresholds);
+  saveJSON("units", state.units);
+  saveJSON("spots", state.spots);
+  saveJSON("activeSpotId", state.activeSpotId);
+  openSettings();
+  renderSpotPicker();
+  refresh();
+}
+
+// ---------- Bootstrap ----------
+
+function bind() {
+  $("#settingsBtn").addEventListener("click", openSettings);
+  $("#saveBtn").addEventListener("click", saveSettings);
+  $("#resetBtn").addEventListener("click", resetSettings);
+  $("#addSpotBtn").addEventListener("click", addSpot);
+  $("#searchBtn").addEventListener("click", runPlaceSearch);
+  $("#placeSearch").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runPlaceSearch(); }
+  });
+  $("#forceUpdateBtn").addEventListener("click", forceUpdate);
+  refreshOpenMapsLink();
+}
+
+// ---------- Place search (Nominatim, free, no key) ----------
+//
+// We hit OpenStreetMap's free Nominatim geocoder. NZ-biased by default. Returns
+// a list — the user taps one to fill the lat/lon fields in the form below.
+
+async function runPlaceSearch() {
+  const q = $("#placeSearch").value.trim();
+  const results = $("#searchResults");
+  if (!q) { results.innerHTML = ""; return; }
+  results.innerHTML = `<div class="search-empty">Searching…</div>`;
+
+  // NZ-bounded by default for fishing relevance, but allow worldwide if the
+  // local search yields nothing.
+  try {
+    const local = await fetchNominatim(q, "nz");
+    const items = local.length ? local : await fetchNominatim(q, null);
+    if (!items.length) {
+      results.innerHTML = `<div class="search-empty">No matches — try a broader name or use the manual form.</div>`;
+      return;
+    }
+    results.innerHTML = "";
+    for (const it of items) {
+      const lat = +parseFloat(it.lat).toFixed(4);
+      const lon = +parseFloat(it.lon).toFixed(4);
+      const btn = el("button", {
+        type: "button",
+        class: "search-result",
+        onclick: () => pickSearchResult(it.display_name.split(",")[0], lat, lon)
+      }, [
+        el("span", { class: "place-name" }, it.display_name.split(",").slice(0, 2).join(",")),
+        el("span", { class: "place-coords" }, `${lat}, ${lon}`)
+      ]);
+      results.appendChild(btn);
+    }
+  } catch (err) {
+    results.innerHTML = `<div class="search-empty">Search failed — check your connection.</div>`;
+  }
+}
+
+async function fetchNominatim(query, countryCode) {
+  const params = new URLSearchParams({
+    q: query,
+    format: "json",
+    limit: "6",
+    addressdetails: "0"
+  });
+  if (countryCode) params.set("countrycodes", countryCode);
+  const url = `https://nominatim.openstreetmap.org/search?${params}`;
+  const r = await fetch(url, { headers: { "Accept": "application/json" } });
+  if (!r.ok) return [];
+  return r.json();
+}
+
+function pickSearchResult(name, lat, lon) {
+  $("#newSpotName").value = name;
+  $("#newSpotLat").value = lat;
+  $("#newSpotLon").value = lon;
+  $("#searchResults").innerHTML = "";
+  $("#placeSearch").value = "";
+  toast(`${name} loaded — tap Add to save`);
+}
+
+// Refresh the "Open Google Maps" link to centre on the current active spot.
+function refreshOpenMapsLink() {
+  const link = $("#openMapsLink");
+  if (!link) return;
+  const s = state.spots.find((x) => x.id === state.activeSpotId) || state.spots[0];
+  const lat = s ? s.lat : -36.84;
+  const lon = s ? s.lon : 174.78;
+  link.href = `https://www.google.com/maps/@${lat},${lon},10z`;
+}
+
+// ---------- Service worker registration + update flow ----------
+
+function registerSW() {
+  if (!("serviceWorker" in navigator)) return;
+
+  window.addEventListener("load", async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("./service-worker.js", {
+        // Force the browser to always fetch service-worker.js fresh from the
+        // network — never serve a stale copy from HTTP cache. Critical for
+        // making sure updates propagate to phones.
+        updateViaCache: "none"
+      });
+
+      // If a new SW is already waiting when we register, prompt immediately.
+      if (reg.waiting && navigator.serviceWorker.controller) {
+        showUpdateAvailable(reg);
+      }
+
+      // Watch for new SWs that come in while the app is open.
+      reg.addEventListener("updatefound", () => {
+        const newSW = reg.installing;
+        if (!newSW) return;
+        newSW.addEventListener("statechange", () => {
+          if (newSW.state === "installed" && navigator.serviceWorker.controller) {
+            // Old SW is still controlling — show user the prompt.
+            showUpdateAvailable(reg);
+          }
+        });
+      });
+
+      // Background-check for updates once an hour while the app is open.
+      setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
+    } catch (err) {
+      console.warn("Service worker registration failed:", err);
+    }
+  });
+
+  // When a new SW takes control, reload once so we get fresh shell.
+  let refreshed = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (refreshed) return;
+    refreshed = true;
+    location.reload();
+  });
+}
+
+function showUpdateAvailable(reg) {
+  const t = $("#toast");
+  t.innerHTML = "";
+  t.classList.add("with-action");
+  t.append(
+    el("span", {}, "New version available"),
+    el("button", {
+      class: "toast-btn",
+      onclick: () => {
+        // Tell the waiting SW to take over; controllerchange handler reloads.
+        const waiting = reg.waiting || reg.installing;
+        if (waiting) waiting.postMessage("SKIP_WAITING");
+        else location.reload();
+      }
+    }, "Reload")
+  );
+  t.hidden = false;
+  // No auto-hide for this one — leave it until the user acts.
+}
+
+// Nuclear option: unregister all SWs, clear all caches, hard reload.
+async function forceUpdate() {
+  if (!confirm("Wipe cached app shell and reload? Your saved spots / thresholds will be kept.")) return;
+  toast("Clearing cache…");
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (err) {
+    console.warn("Force update — clear failed:", err);
+  }
+  // Cache-busting reload that bypasses HTTP cache.
+  location.replace(location.pathname + "?_=" + Date.now());
+}
+
+// Show version in the topbar pill so it's visible without opening settings.
+const _versionPill = document.querySelector("#versionPill");
+if (_versionPill) _versionPill.textContent = "v" + APP_VERSION;
+
+bind();
+registerSW();
+refresh();
+
+// Refresh every 30 min while open.
+setInterval(refresh, 30 * 60 * 1000);
