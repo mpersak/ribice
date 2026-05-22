@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-4";
+const APP_VERSION = "2026.05.22-5";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -773,30 +773,46 @@ function useGPS() {
 }
 
 function renderAll() {
-  const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
+  const { spot } = state.data;
   $("#spotName").textContent = spot.name;
   $("#spotMeta").textContent = `${spot.lat.toFixed(3)}, ${spot.lon.toFixed(3)} · updated ${new Date().toLocaleTimeString("en-NZ", { hour: "2-digit", minute: "2-digit" })}`;
+  // Lazy render: only the currently-visible tab is built on the main thread.
+  // Saves ~50-100ms of off-screen DOM work on every refresh. The other tabs
+  // render lazily on tab switch via setActiveTab → renderForTab.
+  renderForTab(state.activeTab || "today");
+}
 
-  // Compute once, share across cards so the daily badge in the 7-day row uses
-  // the same number as the Best-day card and the hero "now score".
+// Per-tab renderer dispatch. Called from renderAll() (current tab on data
+// arrival) and from setActiveTab (when the user switches to a different tab).
+function renderForTab(tabId) {
+  // Log and Spots don't depend on forecast data — render even before data.
+  if (tabId === "log")   { renderCatchLog(); return; }
+  if (tabId === "spots") { renderSpotsTab(); return; }
+  if (!state.data) return;
+
+  const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
   const dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
 
-  renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
-  renderWarnings(hourlyAgg, marine);
-  renderBaitCard(hourlyAgg, marine);
-  renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
-  renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
-  renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
-  renderHourly(hourlyAgg, marine);
-  renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
-  renderTides(marine);
-  renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar);
-  renderSeaTemp(marine);
-  renderWind(hourlyAgg);
-  renderSwell(marine, hourlyAgg);
-  renderXLinks(spot);
-  renderSolunar(spot, dailyAgg, air, solunar);
-  renderAgreement(hourlyAgg);
+  if (tabId === "today") {
+    renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
+    renderWarnings(hourlyAgg, marine);
+    renderBaitCard(hourlyAgg, marine);
+    renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
+    renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+    renderHourly(hourlyAgg, marine);
+    renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+  } else if (tabId === "conditions") {
+    renderTides(marine);
+    renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar);
+    renderSeaTemp(marine);
+    renderWind(hourlyAgg);
+    renderSwell(marine, hourlyAgg);
+    renderXLinks(spot);
+    renderSolunar(spot, dailyAgg, air, solunar);
+    renderAgreement(hourlyAgg);
+  } else if (tabId === "forecast") {
+    renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
+  }
 }
 
 // Per-day 0-100 score + a "peak window" — the longest run of green hours
@@ -2561,8 +2577,22 @@ async function refresh() {
   const spot = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
   if (!spot) return;
   $("#spotName").textContent = spot.name;
-  $("#spotMeta").textContent = "Fetching forecasts…";
-  $("#verdictHeadline").textContent = "Reading the sky…";
+
+  // Stale-while-revalidate: if we have a recent snapshot for this spot,
+  // render it immediately so the user sees content in ~50ms instead of
+  // waiting 1-2s for the network. Then fetch fresh in the background and
+  // re-render. Cap age at CACHE_MAX_AGE_MS so the user never sees data
+  // older than one hour without the fresh fetch overriding it.
+  const cached = loadForecastCache(spot.id);
+  const hasFreshEnoughCache = cached && (Date.now() - cached.t) < CACHE_MAX_AGE_MS;
+  if (hasFreshEnoughCache) {
+    state.data = { spot, ...cached.data };
+    renderAll();
+    showStaleBadge(cached.t);
+  } else {
+    $("#spotMeta").textContent = "Fetching forecasts…";
+    $("#verdictHeadline").textContent = "Reading the sky…";
+  }
 
   try {
     // NOTE: api.solunar.org is CORS-blocked for browsers — calls always fail.
@@ -2575,8 +2605,7 @@ async function refresh() {
     ]);
     const agg = aggregateMultiModel(forecast);
     if (!agg) throw new Error("No forecast data");
-    state.data = {
-      spot,
+    const fresh = {
       hourlyAgg: agg.hourly,
       dailyAgg: agg.daily,
       marine,
@@ -2584,12 +2613,63 @@ async function refresh() {
       solunar: null,
       solunarTomorrow: null
     };
+    state.data = { spot, ...fresh };
+    saveForecastCache(spot.id, fresh);
     renderAll();
   } catch (err) {
     console.error(err);
-    $("#verdictDetail").textContent = "Forecast unavailable — try again in a minute.";
+    // Only show the error message if we didn't already have cached data
+    // to fall back on — otherwise the stale view is more useful than a
+    // scary error.
+    if (!hasFreshEnoughCache) {
+      $("#verdictDetail").textContent = "Forecast unavailable — try again in a minute.";
+    }
     toast(err.message || "Fetch error");
   }
+}
+
+// ---------- Forecast cache (stale-while-revalidate) ----------
+//
+// Per-spot snapshot of the last successful fetch, keyed by spot id. Render
+// path checks this on every refresh() and shows the stale content instantly
+// while the network call is in flight. ~100KB per spot, well under the
+// localStorage quota.
+
+const CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour
+
+function loadForecastCache(spotId) {
+  try {
+    const raw = localStorage.getItem("ts.fc." + spotId);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry?.t || !entry?.data) return null;
+    return entry;
+  } catch { return null; }
+}
+
+function saveForecastCache(spotId, data) {
+  try {
+    localStorage.setItem("ts.fc." + spotId, JSON.stringify({ t: Date.now(), data }));
+  } catch (e) {
+    // QuotaExceededError — drop the oldest entry and try once more. If the
+    // user has 10+ spots, the LRU eviction keeps total under quota.
+    try {
+      const keys = Object.keys(localStorage).filter((k) => k.startsWith("ts.fc."));
+      const entries = keys.map((k) => {
+        try { return [k, JSON.parse(localStorage.getItem(k))?.t || 0]; } catch { return [k, 0]; }
+      }).sort((a, b) => a[1] - b[1]);
+      if (entries.length) localStorage.removeItem(entries[0][0]);
+      localStorage.setItem("ts.fc." + spotId, JSON.stringify({ t: Date.now(), data }));
+    } catch {/* give up — cache is non-critical */}
+  }
+}
+
+function showStaleBadge(timestamp) {
+  const meta = $("#spotMeta");
+  if (!meta) return;
+  const mins = Math.round((Date.now() - timestamp) / 60000);
+  const ageText = mins < 1 ? "just now" : mins < 60 ? `${mins} min ago` : `${Math.round(mins / 60)}h ago`;
+  meta.innerHTML = `<span class="cache-badge">cached ${ageText}</span> <span class="cache-refreshing">· refreshing</span>`;
 }
 
 // ---------- Settings ----------
@@ -2944,9 +3024,8 @@ function setActiveTab(id) {
   document.querySelectorAll(".bottom-nav [data-tab]").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === id);
   });
-  // Lazy renders (these tabs don't depend on weather refresh).
-  if (id === "log") renderCatchLog();
-  if (id === "spots") renderSpotsTab();
+  // Render the tab's contents lazily — only the active tab does DOM work.
+  renderForTab(id);
   // Scroll up on tab switch so the user lands at the top of the new view.
   window.scrollTo({ top: 0, behavior: "auto" });
 }

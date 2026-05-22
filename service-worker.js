@@ -1,5 +1,5 @@
 // Bump this whenever you ship app shell changes you want to force-evict.
-const CACHE_VERSION = "v6";
+const CACHE_VERSION = "v7";
 const SHELL_CACHE = `shell-${CACHE_VERSION}`;
 const DATA_CACHE = `data-${CACHE_VERSION}`;
 
@@ -47,8 +47,9 @@ self.addEventListener("fetch", (event) => {
     url.hostname.endsWith("solunar.org");
 
   if (isApi) {
-    // Network-first for forecasts, fall back to cached copy. Must always
-    // return a Response — undefined would crash event.respondWith().
+    // Network-first for forecasts so the user gets the freshest data when
+    // online. Falls back to the cached copy when offline. Synthetic 503 on
+    // a full miss so the page's try/catch sees a clean failure.
     event.respondWith(
       fetch(req)
         .then((res) => {
@@ -59,8 +60,6 @@ self.addEventListener("fetch", (event) => {
         .catch(async () => {
           const cached = await caches.match(req);
           if (cached) return cached;
-          // No cache hit either — return a synthetic 503 so the page's
-          // try/catch sees a clean failure instead of a hard error.
           return new Response(
             JSON.stringify({ error: "offline_or_blocked" }),
             { status: 503, headers: { "Content-Type": "application/json" } }
@@ -70,21 +69,25 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  // Network-first for the app shell too — fresh deploys propagate immediately;
-  // cache only serves when the user is offline. This is the fix for the
-  // dreaded "phone stuck on old version" problem with cache-first SWs.
+  // App shell: stale-while-revalidate. We serve from cache immediately for
+  // instant launch (cold-load was ~200-500ms slower with the old network-
+  // first), and kick off a background fetch to refresh the cached copy.
+  // On the NEXT visit the user gets the new version. The in-app "New
+  // version available" toast covers the case where they want it sooner.
   event.respondWith(
-    fetch(req)
-      .then((res) => {
-        if (res.ok && url.origin === self.location.origin) {
-          const copy = res.clone();
-          caches.open(SHELL_CACHE).then((c) => c.put(req, copy));
-        }
-        return res;
-      })
-      .catch(async () => {
-        const cached = await caches.match(req);
-        return cached || new Response("Offline", { status: 503 });
-      })
+    caches.match(req).then((cached) => {
+      const networkFetch = fetch(req)
+        .then((res) => {
+          if (res.ok && url.origin === self.location.origin) {
+            const copy = res.clone();
+            caches.open(SHELL_CACHE).then((c) => c.put(req, copy));
+          }
+          return res;
+        })
+        .catch(() => null);
+      // If we have a cached copy, serve it immediately and update in
+      // background. Otherwise wait for network (first-load case).
+      return cached || networkFetch.then((res) => res || new Response("Offline", { status: 503 }));
+    })
   );
 });
