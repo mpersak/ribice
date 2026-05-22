@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-5";
+const APP_VERSION = "2026.05.22-6";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2161,9 +2161,8 @@ function renderHero(h, marine, daily, dailyScores) {
     else pressureSub = "→ steady";
   }
 
-  // UV peak hour today.
-  const uv = daily.uv_index_max?.[0];
-  const uvLabel = uv == null ? "—" : uv >= 8 ? "Very high" : uv >= 6 ? "High" : uv >= 3 ? "Moderate" : "Low";
+  // UV label for the tile (uv already declared above for the quick-pills strip).
+  const uvLabelTile = uv == null ? "—" : uv >= 8 ? "Very high" : uv >= 6 ? "High" : uv >= 3 ? "Moderate" : "Low";
 
   const stats = $("#nowStats");
   stats.innerHTML = "";
@@ -2173,7 +2172,7 @@ function renderHero(h, marine, daily, dailyScores) {
     statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
     statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : ""),
     statTile("Pressure", cur.pressure_msl != null ? `${Math.round(cur.pressure_msl)} hPa` : "—", pressureSub),
-    statTile("UV", uv != null ? Math.round(uv) : "—", uvLabel)
+    statTile("UV", uv != null ? Math.round(uv) : "—", uvLabelTile)
   );
 }
 
