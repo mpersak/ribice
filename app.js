@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-6";
+const APP_VERSION = "2026.05.22-7";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -221,7 +221,13 @@ function el(tag, attrs = {}, children = []) {
   }
   for (const c of [].concat(children)) {
     if (c == null) continue;
-    e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    // Coerce primitives (numbers, booleans) to strings — appendChild only
+    // accepts Nodes and would throw on a raw number.
+    if (typeof c === "string" || typeof c === "number" || typeof c === "boolean") {
+      e.appendChild(document.createTextNode(String(c)));
+    } else {
+      e.appendChild(c);
+    }
   }
   return e;
 }
@@ -2172,7 +2178,7 @@ function renderHero(h, marine, daily, dailyScores) {
     statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
     statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : ""),
     statTile("Pressure", cur.pressure_msl != null ? `${Math.round(cur.pressure_msl)} hPa` : "—", pressureSub),
-    statTile("UV", uv != null ? Math.round(uv) : "—", uvLabelTile)
+    statTile("UV", uv != null ? String(Math.round(uv)) : "—", uvLabelTile)
   );
 }
 
@@ -3203,10 +3209,12 @@ function renderCatchLog() {
       best.innerHTML = "";
       best.append(
         el("span", { class: "log-best-label" }, "Personal best"),
-        el("span", { class: "log-best-len" }, `${bestFish.length} cm`),
-        bestFish.weight ? el("span", { class: "log-best-wt" }, `${bestFish.weight} kg`) : null,
-        el("span", { class: "log-best-sp" }, sp.name)
+        el("span", { class: "log-best-len" }, `${bestFish.length} cm`)
       );
+      if (bestFish.weight) {
+        best.append(el("span", { class: "log-best-wt" }, `${bestFish.weight} kg`));
+      }
+      best.append(el("span", { class: "log-best-sp" }, sp.name));
     } else best.hidden = true;
 
     // Filters
