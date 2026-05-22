@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-1";
+const APP_VERSION = "2026.05.22-3";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -98,6 +98,80 @@ const DAILY_VARS = [
   "weather_code"
 ];
 
+// ---------- Catch forecast — per-species config ----------
+//
+// NZ saltwater species commonly chased in the upper North Island. Numbers are
+// pragmatic field-fishing values, not lab-precise: tempIdeal is the SST sweet
+// spot, tempOk the wider tolerance band. peakMonths are when the species is
+// reliably catchable in numbers. flowPref/pressurePref/biteTime feed both the
+// overall day score and the per-hour bite timeline.
+
+const SPECIES = [
+  {
+    id: "snapper", name: "Snapper", maori: "Tāmure",
+    seasonText: "Year-round, peak Oct–May",
+    peakMonths: [10, 11, 12, 1, 2, 3, 4, 5],
+    depth: "15–80m",
+    tempIdeal: [16, 21], tempOk: [14, 23],
+    flowPref: "slack", pressurePref: "rising",
+    biteTime: ["dawn", "dusk"], needsCalm: false
+  },
+  {
+    id: "kingfish", name: "Kingfish", maori: "Haku",
+    seasonText: "Dec–Apr",
+    peakMonths: [12, 1, 2, 3, 4],
+    depth: "0–50m, structure",
+    tempIdeal: [18, 22], tempOk: [16, 24],
+    flowPref: "flow", pressurePref: "any",
+    biteTime: ["day", "dawn"], needsCalm: false
+  },
+  {
+    id: "marlin", name: "Striped marlin", maori: "Aku",
+    seasonText: "Jan–May",
+    peakMonths: [1, 2, 3, 4, 5],
+    depth: "Blue water, 200m+",
+    tempIdeal: [19, 24], tempOk: [17.5, 26],
+    flowPref: "any", pressurePref: "any",
+    biteTime: ["day"], needsCalm: true
+  },
+  {
+    id: "kahawai", name: "Kahawai", maori: "Kahawai",
+    seasonText: "Year-round",
+    peakMonths: [10, 11, 12, 1, 2, 3, 4],
+    depth: "Surface, schooling",
+    tempIdeal: [15, 21], tempOk: [13, 23],
+    flowPref: "flow", pressurePref: "any",
+    biteTime: ["dawn", "dusk", "day"], needsCalm: false
+  },
+  {
+    id: "trevally", name: "Trevally", maori: "Araara",
+    seasonText: "Nov–Apr",
+    peakMonths: [11, 12, 1, 2, 3, 4],
+    depth: "5–40m",
+    tempIdeal: [17, 22], tempOk: [15, 24],
+    flowPref: "slack", pressurePref: "rising",
+    biteTime: ["dawn", "dusk"], needsCalm: false
+  },
+  {
+    id: "hapuku", name: "Hāpuku", maori: "Hāpuku",
+    seasonText: "Year-round",
+    peakMonths: [4, 5, 6, 7, 8, 9, 10],
+    depth: "120–400m",
+    tempIdeal: [12, 18], tempOk: [10, 20],
+    flowPref: "any", pressurePref: "any",
+    biteTime: ["day"], needsCalm: true
+  },
+  {
+    id: "tarakihi", name: "Tarakihi", maori: "Tarakihi",
+    seasonText: "Year-round",
+    peakMonths: [3, 4, 5, 6, 7, 8],
+    depth: "40–200m",
+    tempIdeal: [13, 18], tempOk: [11, 20],
+    flowPref: "any", pressurePref: "any",
+    biteTime: ["dawn", "dusk", "day"], needsCalm: false
+  }
+];
+
 // ---------- State ----------
 
 const state = {
@@ -105,6 +179,9 @@ const state = {
   thresholds: loadJSON("thresholds", DEFAULT_THRESHOLDS),
   units: loadJSON("units", DEFAULT_UNITS),
   activeSpotId: loadJSON("activeSpotId", DEFAULT_SPOTS[0].id),
+  activeSpecies: loadJSON("activeSpecies", null),
+  activeTab: loadJSON("activeTab", "today"),
+  catches: loadJSON("catches", []),
   data: null
 };
 
@@ -706,7 +783,9 @@ function renderAll() {
 
   renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
   renderWarnings(hourlyAgg, marine);
+  renderBaitCard(hourlyAgg, marine);
   renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
+  renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
   renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
   renderHourly(hourlyAgg, marine);
   renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
@@ -887,6 +966,367 @@ function biteRow(type, win, isNow, color) {
     el("span", { class: "fish-svg", html: FISH_SVG(color) }),
     el("span", { class: "range" }, `${fmtTime(s.toISOString())} – ${fmtTime(e.toISOString())}`),
     isNow ? el("span", { class: "now-tag" }, "NOW") : null
+  ]);
+}
+
+// ---------- Catch forecast (per-species) ----------
+//
+// Tight-Lines-style species panel — chips for every species in SPECIES, a
+// big "active" card with score + confidence + Māori name + dynamic intel,
+// and a 24-hour hot/warm/slow bite timeline driven by real solunar + tide
+// data. Scoring is derived from your live feed: SST vs species range,
+// current month vs peak season, solunar quality, tide flow, pressure
+// trend, sea state. Nothing here is mock.
+
+function scoreSpecies(sp, ctx) {
+  const { sst, tideRange, pressureTrend, monthIdx, sunrise, sunset, solunar, waveMax } = ctx;
+
+  // 1. SST fit (0-25). Inside ideal = 25, inside ok band = 15, outside = 5.
+  let tempFit = 12, tempNote = "no SST data";
+  if (sst != null) {
+    if (sst >= sp.tempIdeal[0] && sst <= sp.tempIdeal[1]) {
+      tempFit = 25; tempNote = `peak ${sp.name.toLowerCase()} zone`;
+    } else if (sst >= sp.tempOk[0] && sst <= sp.tempOk[1]) {
+      tempFit = 15;
+      tempNote = sst < sp.tempIdeal[0] ? "edge of range, cool side" : "edge of range, warm side";
+    } else {
+      tempFit = 5;
+      tempNote = sst < sp.tempIdeal[0] ? "too cold" : "too warm";
+    }
+  }
+
+  // 2. Season fit (0-20). Peak month = 20, shoulder = 12, off = 5.
+  let seasonFit = 5;
+  if (sp.peakMonths.includes(monthIdx)) seasonFit = 20;
+  else {
+    const prev = monthIdx === 1 ? 12 : monthIdx - 1;
+    const next = monthIdx === 12 ? 1 : monthIdx + 1;
+    if (sp.peakMonths.includes(prev) || sp.peakMonths.includes(next)) seasonFit = 12;
+  }
+
+  // 3. Best solunar window in daylight (0-20).
+  let solFit = 10;
+  if (solunar && sunrise && sunset) {
+    const sr = sunrise instanceof Date ? sunrise : new Date(sunrise);
+    const ss = sunset instanceof Date ? sunset : new Date(sunset);
+    for (const win of [solunar.majorA, solunar.majorB]) {
+      if (win?.start && win?.end) {
+        const s = win.start instanceof Date ? win.start : new Date(win.start);
+        const e = win.end instanceof Date ? win.end : new Date(win.end);
+        if (e > sr && s < ss) { solFit = 20; break; }
+      }
+    }
+  }
+
+  // 4. Sea state (0-15). Offshore/deep species are penalised by big swell.
+  let calmFit = 10;
+  if (sp.needsCalm && waveMax != null) {
+    if (waveMax < 1.5) calmFit = 15;
+    else if (waveMax < 2.5) calmFit = 8;
+    else calmFit = 2;
+  } else if (waveMax != null) {
+    calmFit = waveMax < 2.0 ? 12 : 8;
+  }
+
+  // 5. Tide range (0-10). Spring tides help most species; slack-fishers get
+  //    a small bonus from the bigger window mid-tide.
+  let tideFit = 5;
+  if (tideRange != null) {
+    if (tideRange > 2.8) tideFit = 10;
+    else if (tideRange > 2.2) tideFit = 8;
+    else if (tideRange > 1.7) tideFit = 6;
+    else tideFit = 4;
+  }
+
+  // 6. Pressure trend match (0-10).
+  let pFit = 6;
+  if (pressureTrend === sp.pressurePref) pFit = 10;
+  else if (sp.pressurePref === "any") pFit = 8;
+  else if (pressureTrend === "steady") pFit = 7;
+  else pFit = 4;
+
+  const score = Math.max(0, Math.min(100,
+    Math.round(tempFit + seasonFit + solFit + calmFit + tideFit + pFit)));
+
+  // Confidence — how trustworthy is this score given the inputs?
+  let conf = "Low";
+  if (tempFit >= 25 && seasonFit >= 20) conf = "High";
+  else if (tempFit >= 15 && seasonFit >= 12) conf = "Medium";
+
+  // Templated intel note from the real data. Keep it short and concrete.
+  const bits = [];
+  if (sst != null) bits.push(`SST ${sst.toFixed(1)}°C — ${tempNote}`);
+  if (seasonFit === 20) bits.push("peak season");
+  else if (seasonFit <= 5) bits.push("off-season");
+  if (solFit === 20) bits.push("solunar major in daylight");
+  if (pressureTrend === sp.pressurePref && sp.pressurePref !== "any") {
+    bits.push(`${pressureTrend} pressure favours ${sp.name.toLowerCase()}`);
+  }
+  if (sp.needsCalm && waveMax != null && waveMax >= 2.5) {
+    bits.push(`swell ${waveMax.toFixed(1)}m — long run, pick a weather window`);
+  }
+  const verdict = score >= 80 ? "Send it." :
+                  score >= 60 ? "Worth a shot." :
+                  score >= 40 ? "Slow but possible." :
+                                "Sit this one out.";
+  const intel = bits.join(" · ") + (bits.length ? " · " : "") + verdict;
+
+  return { score, conf, intel };
+}
+
+// Per-hour bite quality for a species. Returns 24 bands of 'hot'/'warm'/'slow'.
+function speciesBiteTimeline(sp, ctx) {
+  const { sunrise, sunset, solunar, tideEvents } = ctx;
+  const sr = sunrise ? (sunrise instanceof Date ? sunrise : new Date(sunrise)) : null;
+  const ss = sunset ? (sunset instanceof Date ? sunset : new Date(sunset)) : null;
+  const today = new Date();
+  const out = [];
+
+  for (let h = 0; h < 24; h++) {
+    const t = new Date(today);
+    t.setHours(h, 30, 0, 0);
+    let s = 0;
+
+    // Solunar majors/minors
+    if (solunar) {
+      for (const win of [solunar.majorA, solunar.majorB]) {
+        if (win?.start && win?.end) {
+          const ws = win.start instanceof Date ? win.start : new Date(win.start);
+          const we = win.end instanceof Date ? win.end : new Date(win.end);
+          if (t >= ws && t <= we) s += 40;
+        }
+      }
+      for (const win of [solunar.minorA, solunar.minorB]) {
+        if (win?.start && win?.end) {
+          const ws = win.start instanceof Date ? win.start : new Date(win.start);
+          const we = win.end instanceof Date ? win.end : new Date(win.end);
+          if (t >= ws && t <= we) s += 20;
+        }
+      }
+    }
+
+    // Time-of-day preferences
+    if (sp.biteTime.includes("dawn") && sr) {
+      const gap = Math.abs(t - sr) / 60000;
+      if (gap < 90) s += 30;
+      else if (gap < 180) s += 12;
+    }
+    if (sp.biteTime.includes("dusk") && ss) {
+      const gap = Math.abs(t - ss) / 60000;
+      if (gap < 90) s += 30;
+      else if (gap < 180) s += 12;
+    }
+    if (sp.biteTime.includes("day") && sr && ss && t >= sr && t <= ss) s += 12;
+    if (sp.biteTime.includes("night")) {
+      const hr = t.getHours();
+      if (hr >= 22 || hr <= 5) s += 12;
+    }
+
+    // Tide flow preference
+    if (tideEvents && tideEvents.length) {
+      let nearEv = false;
+      for (const ev of tideEvents) {
+        const gap = Math.abs(new Date(ev.time) - t) / 60000;
+        if (gap < 60) { nearEv = true; break; }
+      }
+      if (sp.flowPref === "slack" && nearEv) s += 18;
+      if (sp.flowPref === "flow" && !nearEv) s += 12;
+    }
+
+    const band = s >= 50 ? "hot" : s >= 28 ? "warm" : "slow";
+    out.push({ hour: h, score: s, band });
+  }
+  return out;
+}
+
+// Extract contiguous "hot" runs as peak windows for the active species.
+function peakWindowsFromTimeline(timeline) {
+  const runs = [];
+  let runStart = null;
+  for (let i = 0; i < timeline.length; i++) {
+    if (timeline[i].band === "hot") {
+      if (runStart == null) runStart = i;
+    } else if (runStart != null) {
+      runs.push([runStart, i]);
+      runStart = null;
+    }
+  }
+  if (runStart != null) runs.push([runStart, timeline.length]);
+  return runs;
+}
+
+function renderCatch(spot, hourly, daily, marine, solunarApi) {
+  const headline = $("#catchHeadline");
+  const chipsWrap = $("#speciesChips");
+  const activeWrap = $("#speciesActive");
+  if (!chipsWrap || !activeWrap) return;
+  chipsWrap.innerHTML = "";
+  activeWrap.innerHTML = "";
+
+  // Build the shared context once — all species score against the same now.
+  const now = Date.now();
+  let nowIdx = 0;
+  for (let i = 0; i < hourly.time.length; i++) {
+    if (new Date(hourly.time[i]).getTime() >= now - 30 * 60 * 1000) { nowIdx = i; break; }
+  }
+
+  let sst = null;
+  if (marine?.hourly?.sea_surface_temperature) {
+    const mIdx = indexAtTime(marine.hourly.time, hourly.time[nowIdx]);
+    if (mIdx >= 0) sst = marine.hourly.sea_surface_temperature[mIdx];
+  }
+
+  let tideRange = null;
+  let tideEvents = [];
+  if (marine?.hourly?.sea_level_height_msl) {
+    const times = marine.hourly.time, hs = marine.hourly.sea_level_height_msl;
+    const todayKey = new Date().toDateString();
+    const todayH = [];
+    for (let i = 0; i < times.length; i++) {
+      if (new Date(times[i]).toDateString() === todayKey && hs[i] != null) todayH.push(hs[i]);
+    }
+    if (todayH.length) tideRange = Math.max(...todayH) - Math.min(...todayH);
+    tideEvents = extractTideEvents(times, hs, true);
+  }
+
+  let pressureTrend = "steady";
+  if (hourly.pressure_msl) {
+    const future = Math.min(hourly.time.length - 1, nowIdx + 12);
+    const dP = (hourly.pressure_msl[future] ?? 0) - (hourly.pressure_msl[nowIdx] ?? 0);
+    if (dP > 1.5) pressureTrend = "rising";
+    else if (dP < -1.5) pressureTrend = "falling";
+  }
+
+  let waveMax = null;
+  if (marine?.hourly?.wave_height) {
+    const todayKey = new Date().toDateString();
+    const todayW = [];
+    for (let i = 0; i < marine.hourly.time.length; i++) {
+      if (new Date(marine.hourly.time[i]).toDateString() === todayKey
+          && marine.hourly.wave_height[i] != null) {
+        todayW.push(marine.hourly.wave_height[i]);
+      }
+    }
+    if (todayW.length) waveMax = Math.max(...todayW);
+  }
+
+  const today = new Date();
+  const solWin = (solunarApi && solunarApi.majorA?.start)
+    ? solunarApi
+    : solunarWindows(today, spot.lon);
+  const sunrise = (solunarApi?.sunRise) || (daily.sunrise?.[0] ? new Date(daily.sunrise[0]) : null);
+  const sunset  = (solunarApi?.sunSet)  || (daily.sunset?.[0]  ? new Date(daily.sunset[0])  : null);
+
+  const ctx = {
+    sst, tideRange, tideEvents, pressureTrend,
+    monthIdx: today.getMonth() + 1,
+    sunrise, sunset, solunar: solWin, waveMax
+  };
+
+  // Score every species, sort hot→cold.
+  const scored = SPECIES.map((sp) => ({
+    ...sp,
+    ...scoreSpecies(sp, ctx),
+    timeline: speciesBiteTimeline(sp, ctx)
+  })).sort((a, b) => b.score - a.score);
+
+  // Default active = top scorer, unless user already picked one that's still in the list.
+  if (!state.activeSpecies || !scored.find((s) => s.id === state.activeSpecies)) {
+    state.activeSpecies = scored[0].id;
+  }
+
+  if (headline) {
+    headline.textContent = scored[0] ? `· top ${scored[0].name.toLowerCase()} ${scored[0].score}/100` : "";
+  }
+
+  // Chip row
+  for (const sp of scored) {
+    const active = sp.id === state.activeSpecies;
+    const cls = sp.score >= 70 ? "high" : sp.score >= 45 ? "mid" : "low";
+    chipsWrap.appendChild(el("button", {
+      class: "sp-chip " + cls + (active ? " active" : ""),
+      onclick: () => {
+        state.activeSpecies = sp.id;
+        saveJSON("activeSpecies", sp.id);
+        renderCatch(spot, hourly, daily, marine, solunarApi);
+      }
+    }, [
+      el("span", { class: "sp-name" }, sp.name),
+      el("span", { class: "sp-chip-score" }, String(sp.score))
+    ]));
+  }
+
+  // Active species card
+  const active = scored.find((s) => s.id === state.activeSpecies) || scored[0];
+  const cls = active.score >= 70 ? "high" : active.score >= 45 ? "mid" : "low";
+  const confCls = active.conf === "High" ? "good" : active.conf === "Medium" ? "warn" : "muted";
+
+  const peakRuns = peakWindowsFromTimeline(active.timeline);
+  const peakChunks = peakRuns.map(([s, e]) =>
+    `${String(s).padStart(2, "0")}:00 – ${String(e).padStart(2, "0")}:00`);
+
+  activeWrap.append(
+    el("div", { class: "sp-head" }, [
+      el("div", { class: "sp-id" }, [
+        el("div", { class: "sp-maori" }, active.maori),
+        el("h3", { class: "sp-title" }, active.name),
+        el("div", { class: "sp-meta" }, [
+          el("span", { class: "sp-pill" }, active.depth),
+          el("span", { class: "sp-pill " + confCls }, `${active.conf} conf.`)
+        ])
+      ]),
+      el("div", { class: "sp-bubble " + cls }, [
+        el("div", { class: "sp-bubble-n" }, String(active.score)),
+        el("div", { class: "sp-bubble-of" }, "/100")
+      ])
+    ]),
+    el("div", { class: "sp-season" }, active.seasonText),
+    biteTimelineEl(active.timeline),
+    el("div", { class: "sp-intel" }, [el("span", { class: "diamond" }, "◆ "), active.intel]),
+    peakChunks.length
+      ? el("div", { class: "sp-peaks" }, [
+          el("div", { class: "sp-peaks-label" }, "Peak windows today"),
+          ...peakChunks.map((c) => el("div", { class: "sp-peak-row" }, c))
+        ])
+      : el("div", { class: "sp-peaks empty" }, "No standout windows today — fish the changes anyway.")
+  );
+
+  // Forecast tab's secondary ranking list (Other species).
+  renderOtherSpeciesList(scored);
+}
+
+function biteTimelineEl(timeline) {
+  const W = 320, H = 56;
+  const now = new Date();
+  const nowH = now.getHours() + now.getMinutes() / 60;
+  let bars = "";
+  for (const b of timeline) {
+    const x = (b.hour / 24) * W;
+    const w = W / 24;
+    const color = b.band === "hot" ? "#6fdc8c"
+                : b.band === "warm" ? "#7cc4e8"
+                : "rgba(255,255,255,0.06)";
+    bars += `<rect x="${x.toFixed(1)}" y="8" width="${(w - 1).toFixed(1)}" height="${H - 16}" rx="2" fill="${color}"/>`;
+  }
+  const nowX = (nowH / 24) * W;
+  return el("div", { class: "sp-timeline" }, [
+    el("div", { class: "sp-timeline-chart",
+      html: `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="24-hour bite timeline">
+        ${bars}
+        <line x1="${nowX.toFixed(1)}" y1="2" x2="${nowX.toFixed(1)}" y2="${H - 2}"
+              stroke="#ffd47a" stroke-width="2"/>
+        <text x="${nowX.toFixed(1)}" y="${H - 1}" font-size="7" fill="#ffd47a"
+              text-anchor="middle" font-family="ui-monospace,monospace">NOW</text>
+      </svg>` }),
+    el("div", { class: "sp-timeline-axis" }, [
+      el("span", {}, "00"), el("span", {}, "06"),
+      el("span", {}, "12"), el("span", {}, "18"), el("span", {}, "24")
+    ]),
+    el("div", { class: "sp-timeline-legend" }, [
+      el("span", { class: "tll hot" }, "■ hot"),
+      el("span", { class: "tll warm" }, "■ warm"),
+      el("span", { class: "tll slow" }, "■ slow")
+    ])
   ]);
 }
 
@@ -1491,6 +1931,9 @@ function renderWind(h) {
     ? `· ${fmtWind(nowWind)} ${compass(nowDir)} now, gust ${fmtWind(nowGust)}`
     : "";
 
+  // Compass viz at the top of the wind card.
+  renderWindCompass(nowDir, nowWind, nowGust);
+
   wrap.append(
     el("div", { class: "swell-item" }, [
       el("div", { class: "label" }, "Next 24h mean"),
@@ -1642,8 +2085,8 @@ function renderHero(h, marine, daily, dailyScores) {
   }
   $("#verdictDetail").textContent = detail;
 
-  // Score chip — single 0-100 number for "now". Uses today's daily score so
-  // the hero agrees with the 7-day badge and Best-day card.
+  // Arc gauge — 0-100 score with an animated sweep around the ring. Replaces
+  // the flat chip with a Tight-Lines-style circular gauge.
   const todayScore = dailyScores && dailyScores[0] ? dailyScores[0].score : null;
   let chip = $("#verdictScore");
   if (!chip) {
@@ -1651,13 +2094,24 @@ function renderHero(h, marine, daily, dailyScores) {
     $("#verdict").appendChild(chip);
   }
   if (todayScore != null) {
-    chip.innerHTML = "";
     const cls = todayScore >= 70 ? "high" : todayScore >= 45 ? "mid" : "low";
-    chip.className = "verdict-score " + cls;
-    chip.append(
-      el("div", { class: "n" }, String(todayScore)),
-      el("div", { class: "of" }, "/100")
-    );
+    chip.className = "verdict-score gauge " + cls;
+    const r = 28, c = 2 * Math.PI * r; // circumference
+    const dash = (todayScore / 100) * c;
+    const ringColor = cls === "high" ? "#6fdc8c" : cls === "mid" ? "#ffd47a" : "#ff7a7a";
+    chip.innerHTML = `
+      <svg viewBox="0 0 72 72" class="gauge-svg" aria-hidden="true">
+        <circle cx="36" cy="36" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"/>
+        <circle cx="36" cy="36" r="${r}" fill="none"
+                stroke="${ringColor}" stroke-width="6" stroke-linecap="round"
+                stroke-dasharray="${dash.toFixed(1)} ${(c - dash).toFixed(1)}"
+                transform="rotate(-90 36 36)"
+                style="filter:drop-shadow(0 0 6px ${ringColor}88)"/>
+      </svg>
+      <div class="gauge-text">
+        <div class="n">${todayScore}</div>
+        <div class="of">/100</div>
+      </div>`;
   }
 
   // Quick-status pills row: tide direction, UV, moon. Tight summary strip
@@ -1680,13 +2134,30 @@ function renderHero(h, marine, daily, dailyScores) {
 
   const code = cur.weather_code != null ? Math.round(cur.weather_code) : 0;
   const [icon, label] = wmo(code);
+
+  // Pressure trend (for the pressure tile's sub).
+  let pressureSub = "";
+  if (h.pressure_msl) {
+    const future = Math.min(h.time.length - 1, idx + 12);
+    const dP = (h.pressure_msl[future] ?? 0) - (h.pressure_msl[idx] ?? 0);
+    if (dP > 1.5) pressureSub = "↗ rising";
+    else if (dP < -1.5) pressureSub = "↘ falling";
+    else pressureSub = "→ steady";
+  }
+
+  // UV peak hour today.
+  const uv = daily.uv_index_max?.[0];
+  const uvLabel = uv == null ? "—" : uv >= 8 ? "Very high" : uv >= 6 ? "High" : uv >= 3 ? "Moderate" : "Low";
+
   const stats = $("#nowStats");
   stats.innerHTML = "";
   stats.append(
     statTile("Now", `${icon} ${fmtTemp(cur.temperature_2m)}`, label),
     statTile("Wind", fmtWind(cur.wind_speed_10m), `${compass(cur.wind_direction_10m)} · gust ${fmtWind(cur.wind_gusts_10m)}`),
     statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
-    statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : "")
+    statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : ""),
+    statTile("Pressure", cur.pressure_msl != null ? `${Math.round(cur.pressure_msl)} hPa` : "—", pressureSub),
+    statTile("UV", uv != null ? Math.round(uv) : "—", uvLabel)
   );
 }
 
@@ -2226,6 +2697,80 @@ function bind() {
   });
   $("#forceUpdateBtn").addEventListener("click", forceUpdate);
   refreshOpenMapsLink();
+
+  // Catch Log: add catch dialog + regs sheet
+  $("#openAddCatchBtn")?.addEventListener("click", openAddCatchDialog);
+  $("#closeAddCatchBtn")?.addEventListener("click", () => $("#addCatchDialog").close());
+  $("#cancelAddCatchBtn")?.addEventListener("click", () => $("#addCatchDialog").close());
+  $("#addCatchForm")?.addEventListener("submit", saveCatch);
+  $("#addCatchPhoto")?.addEventListener("change", handleAddCatchPhoto);
+  $("#openRegsBtn")?.addEventListener("click", openRegsDialog);
+  $("#closeRegsBtn")?.addEventListener("click", () => $("#regsDialog").close());
+
+  // Spots tab — wired to the tab-specific search/add inputs
+  $("#useGPSBtn")?.addEventListener("click", useGPS);
+  $("#searchBtnTab")?.addEventListener("click", runPlaceSearchTab);
+  $("#placeSearchTab")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); runPlaceSearchTab(); }
+  });
+  $("#addSpotBtnTab")?.addEventListener("click", addSpotTab);
+}
+
+// Mirror of runPlaceSearch but bound to the Spots tab inputs.
+async function runPlaceSearchTab() {
+  const q = $("#placeSearchTab").value.trim();
+  const results = $("#searchResultsTab");
+  if (!q) { results.innerHTML = ""; return; }
+  results.innerHTML = `<div class="search-empty">Searching…</div>`;
+  try {
+    const local = await fetchNominatim(q, "nz");
+    const items = local.length ? local : await fetchNominatim(q, null);
+    if (!items.length) {
+      results.innerHTML = `<div class="search-empty">No matches — try a broader name.</div>`;
+      return;
+    }
+    results.innerHTML = "";
+    for (const it of items) {
+      const lat = +parseFloat(it.lat).toFixed(4);
+      const lon = +parseFloat(it.lon).toFixed(4);
+      results.appendChild(el("button", {
+        type: "button",
+        class: "search-result",
+        onclick: () => {
+          $("#newSpotNameTab").value = it.display_name.split(",")[0];
+          $("#newSpotLatTab").value = lat;
+          $("#newSpotLonTab").value = lon;
+          results.innerHTML = "";
+        }
+      }, [
+        el("span", { class: "place-name" }, it.display_name.split(",").slice(0, 2).join(",")),
+        el("span", { class: "place-coords" }, `${lat}, ${lon}`)
+      ]));
+    }
+  } catch {
+    results.innerHTML = `<div class="search-empty">Search failed — check your connection.</div>`;
+  }
+}
+
+// Mirror of addSpot but for the Spots tab inputs.
+function addSpotTab() {
+  const name = $("#newSpotNameTab").value.trim();
+  const lat = parseFloat($("#newSpotLatTab").value);
+  const lon = parseFloat($("#newSpotLonTab").value);
+  if (!name || isNaN(lat) || isNaN(lon)) {
+    toast("Need a name and valid coords");
+    return;
+  }
+  const id = name.toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 6) + Date.now().toString(36).slice(-3);
+  state.spots.push({ id, name, lat, lon });
+  saveJSON("spots", state.spots);
+  $("#newSpotNameTab").value = "";
+  $("#newSpotLatTab").value = "";
+  $("#newSpotLonTab").value = "";
+  $("#searchResultsTab").innerHTML = "";
+  renderSpotsTab();
+  renderSpotPicker();
+  toast(`Added ${name}`);
 }
 
 // ---------- Place search (Nominatim, free, no key) ----------
@@ -2387,11 +2932,692 @@ async function forceUpdate() {
   location.replace(location.pathname + "?_=" + Date.now());
 }
 
+// ---------- Tab routing ----------
+
+function setActiveTab(id) {
+  state.activeTab = id;
+  saveJSON("activeTab", id);
+  document.body.dataset.tab = id;
+  document.querySelectorAll("main [data-tab]").forEach((sec) => {
+    sec.classList.toggle("tab-active", sec.dataset.tab === id);
+  });
+  document.querySelectorAll(".bottom-nav [data-tab]").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === id);
+  });
+  // Lazy renders (these tabs don't depend on weather refresh).
+  if (id === "log") renderCatchLog();
+  if (id === "spots") renderSpotsTab();
+  // Scroll up on tab switch so the user lands at the top of the new view.
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+
+function bindTabs() {
+  document.querySelectorAll(".bottom-nav [data-tab]").forEach((b) => {
+    b.addEventListener("click", () => setActiveTab(b.dataset.tab));
+  });
+  setActiveTab(state.activeTab || "today");
+}
+
+// ---------- Bait & lure suggestions ----------
+//
+// Conditions-based recommender. Derives a short list of 3 suggestions from
+// current time-of-day, wind, swell, water temp, month and next tide direction.
+// All inputs come from the live forecast — nothing is mocked.
+
+function getBaitSuggestions(ctx) {
+  const { hour, wind, swell, sst, monthIdx, nextTide } = ctx;
+  const isDawn   = hour >= 5  && hour < 7;
+  const isDusk   = hour >= 17 && hour < 20;
+  const isNight  = hour < 5   || hour >= 20;
+  const isCalm   = wind != null && wind <= 12;
+  const isRough  = swell != null && swell > 1.5;
+  const isWarm   = sst != null && sst >= 20;
+  const isCold   = sst != null && sst < 16;
+  const isSummer = monthIdx === 12 || monthIdx <= 2;
+  const isWinter = monthIdx >= 6 && monthIdx <= 8;
+  const isIncoming = nextTide?.type === "high";
+  const sug = [];
+
+  if ((isDawn || isDusk) && isCalm && !isRough) sug.push({
+    name: "Surface popper / stickbait", tag: "TOP WATER", tone: "amber",
+    reason: "Dawn & dusk trigger surface blitzes — walk-the-dog for kingfish and kahawai"
+  });
+  if (isWarm && !isRough && isSummer) sug.push({
+    name: "Knife jig / speed jig", tag: "PELAGIC", tone: "purple",
+    reason: "Warm water activates kingfish near the surface — drop fast, burn back up"
+  });
+  if (!isRough && isIncoming) sug.push({
+    name: "Soft bait on jig head", tag: "INCOMING TIDE", tone: "teal",
+    reason: "Incoming tide pushes bait over drop-offs — drift paddle tails with the current"
+  });
+  if (isRough || (wind != null && wind > 20)) sug.push({
+    name: "Pilchard on ledger rig", tag: "SEEK SHELTER", tone: "blue",
+    reason: "Rough conditions — find a sheltered bay, heavy sinker + fresh pilchard on the bottom"
+  });
+  if (isCold || isWinter) sug.push({
+    name: "Squid strip — slow bottom", tag: "WINTER", tone: "orange",
+    reason: "Cold water slows fish — slow presentation with squid near the seabed triggers snapper"
+  });
+  if (isNight) sug.push({
+    name: "Whole pilchard or squid", tag: "NIGHT", tone: "navy",
+    reason: "Snapper and trevally feed confidently after dark — scent beats sight"
+  });
+  // Reliable fallback so the card is never empty.
+  sug.push({
+    name: "Kabura / tai rubber", tag: "RELIABLE", tone: "grey",
+    reason: "Works in almost any condition — slow spiral drop attracts snapper and trevally all year"
+  });
+
+  const seen = new Set();
+  return sug.filter((s) => { if (seen.has(s.name)) return false; seen.add(s.name); return true; }).slice(0, 3);
+}
+
+function renderBaitCard(hourly, marine) {
+  const wrap = $("#baitList");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+
+  const now = Date.now();
+  let nowIdx = 0;
+  for (let i = 0; i < hourly.time.length; i++) {
+    if (new Date(hourly.time[i]).getTime() >= now - 30 * 60 * 1000) { nowIdx = i; break; }
+  }
+
+  const windKt = (hourly.wind_speed_10m[nowIdx] || 0) * KMH_TO_KT;
+  let swell = null, sst = null;
+  if (marine?.hourly) {
+    const mIdx = indexAtTime(marine.hourly.time, hourly.time[nowIdx]);
+    if (mIdx >= 0) {
+      swell = marine.hourly.wave_height?.[mIdx];
+      sst = marine.hourly.sea_surface_temperature?.[mIdx];
+    }
+  }
+  const tideEvents = marine?.hourly?.sea_level_height_msl
+    ? extractTideEvents(marine.hourly.time, marine.hourly.sea_level_height_msl, false)
+    : [];
+  const nextTide = tideEvents.find((e) => new Date(e.time).getTime() > now);
+
+  const ctx = {
+    hour: new Date().getHours(),
+    wind: windKt,
+    swell,
+    sst,
+    monthIdx: new Date().getMonth() + 1,
+    nextTide
+  };
+
+  for (const s of getBaitSuggestions(ctx)) {
+    wrap.appendChild(el("div", { class: "bait-row tone-" + s.tone }, [
+      el("div", { class: "bait-icon", html: `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" aria-hidden="true"><path d="M2 12C2 12 7 5 12 5C17 5 22 12 22 12C22 12 17 19 12 19C7 19 2 12 2 12Z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/></svg>` }),
+      el("div", { class: "bait-body" }, [
+        el("div", { class: "bait-head" }, [
+          el("span", { class: "bait-name" }, s.name),
+          el("span", { class: "bait-tag" }, s.tag)
+        ]),
+        el("div", { class: "bait-reason" }, s.reason)
+      ])
+    ]));
+  }
+}
+
+// ---------- Catch Log ----------
+
+const LOG_SPECIES = [
+  { id: "snapper",  name: "Snapper",        maori: "Tāmure",       color: "#FF6B6B" },
+  { id: "kingfish", name: "Kingfish",       maori: "Haku",         color: "#F5A623" },
+  { id: "marlin",   name: "Striped Marlin", maori: "Takeketonga",  color: "#00C9A7" },
+  { id: "kahawai",  name: "Kahawai",        maori: "Kahawai",      color: "#7BD4F0" },
+  { id: "trevally", name: "Trevally",       maori: "Araara",       color: "#C77DFF" },
+  { id: "hapuku",   name: "Hāpuku",         maori: "Hāpuku",       color: "#4D96FF" },
+  { id: "tarakihi", name: "Tarakihi",       maori: "Tarakihi",     color: "#FF9F43" },
+  { id: "johndory", name: "John Dory",      maori: "Kuparu",       color: "#7B8FA1" },
+  { id: "gurnard",  name: "Gurnard",        maori: "Kumukumu",     color: "#7B8FA1" },
+  { id: "bluecod",  name: "Blue Cod",       maori: "Rāwaru",       color: "#7BD4F0" },
+  { id: "crayfish", name: "Rock Lobster",   maori: "Kōura",        color: "#FF6B6B" },
+  { id: "paua",     name: "Pāua",           maori: "Pāua",         color: "#00C9A7" },
+  { id: "other",    name: "Other",          maori: "",             color: "#7B8FA1" }
+];
+
+const NZ_REGS = [
+  { id: "snapper",  name: "Snapper",        maori: "Tāmure",      color: "#FF6B6B", minSize: 30, bag: 9,  bagNote: "per person/day", measure: "total length", note: "Northland/Hauraki Gulf: check regional limits" },
+  { id: "kingfish", name: "Kingfish",       maori: "Haku",        color: "#F5A623", minSize: 75, bag: 3,  bagNote: "per person/day", measure: "total length", note: "Tag & release encouraged for large fish" },
+  { id: "kahawai",  name: "Kahawai",        maori: "Kahawai",     color: "#7BD4F0", minSize: 30, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
+  { id: "trevally", name: "Trevally",       maori: "Araara",      color: "#C77DFF", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
+  { id: "hapuku",   name: "Hāpuku / Groper",maori: "Hāpuku",      color: "#4D96FF", minSize: 40, bag: 3,  bagNote: "combined hāpuku & bass", measure: "total length", note: "" },
+  { id: "tarakihi", name: "Tarakihi",       maori: "Tarakihi",    color: "#FF9F43", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
+  { id: "marlin",   name: "Striped Marlin", maori: "Takeketonga", color: "#00C9A7", minSize: null, bag: 1, bagNote: "per vessel/day", measure: "LJFL", note: "Tag & release strongly encouraged" },
+  { id: "johndory", name: "John Dory",      maori: "Kuparu",      color: "#7B8FA1", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
+  { id: "gurnard",  name: "Gurnard",        maori: "Kumukumu",    color: "#7B8FA1", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
+  { id: "bluecod",  name: "Blue Cod",       maori: "Rāwaru",      color: "#7BD4F0", minSize: 33, bag: 20, bagNote: "per person/day", measure: "total length", note: "Varies by region — some areas closed or restricted" },
+  { id: "crayfish", name: "Rock Lobster",   maori: "Kōura",       color: "#FF6B6B", minSize: 54, bag: 6,  bagNote: "per person/day", measure: "tail width",   note: "Berried / soft-shell females must be returned" },
+  { id: "paua",     name: "Pāua",           maori: "Pāua",        color: "#00C9A7", minSize: 125, bag: 10, bagNote: "per person/day", measure: "shell length", note: "Must be prised off underwater, not on rocks" }
+];
+
+state._logFilter = "all";
+
+function renderCatchLog() {
+  const cards = $("#logCards");
+  const count = $("#logCount");
+  const stats = $("#logStats");
+  const best = $("#logBest");
+  const filters = $("#logFilters");
+  if (!cards) return;
+
+  const all = state.catches || [];
+  count.textContent = all.length ? `· ${all.length}` : "";
+
+  // Stats + best
+  if (all.length) {
+    stats.hidden = false;
+    stats.innerHTML = "";
+    const totalKg = all.reduce((s, c) => s + (parseFloat(c.weight) || 0), 0);
+    const speciesIn = [...new Set(all.map((c) => c.species))];
+    stats.append(
+      logStatTile("Catches", all.length, "fish", "var(--accent)"),
+      logStatTile("Species", speciesIn.length, "types", "var(--accent)"),
+      logStatTile("Total wt", totalKg < 10 ? totalKg.toFixed(1) : Math.round(totalKg), "kg", "var(--accent-2)")
+    );
+
+    const bestFish = all.reduce((b, c) => (parseFloat(c.length) || 0) > (parseFloat(b?.length) || 0) ? c : b, null);
+    if (bestFish && bestFish.length) {
+      best.hidden = false;
+      const sp = LOG_SPECIES.find((s) => s.id === bestFish.species) || { name: bestFish.species || "Fish" };
+      best.innerHTML = "";
+      best.append(
+        el("span", { class: "log-best-label" }, "Personal best"),
+        el("span", { class: "log-best-len" }, `${bestFish.length} cm`),
+        bestFish.weight ? el("span", { class: "log-best-wt" }, `${bestFish.weight} kg`) : null,
+        el("span", { class: "log-best-sp" }, sp.name)
+      );
+    } else best.hidden = true;
+
+    // Filters
+    filters.hidden = false;
+    filters.innerHTML = "";
+    filters.appendChild(logFilterChip("All", "all", state._logFilter === "all", all.length));
+    for (const id of speciesIn) {
+      const sp = LOG_SPECIES.find((x) => x.id === id) || { name: id, color: "#7B8FA1" };
+      const n = all.filter((c) => c.species === id).length;
+      filters.appendChild(logFilterChip(sp.name, id, state._logFilter === id, n, sp.color));
+    }
+  } else {
+    stats.hidden = true;
+    best.hidden = true;
+    filters.hidden = true;
+  }
+
+  // Cards
+  cards.innerHTML = "";
+  const filtered = state._logFilter === "all" ? all : all.filter((c) => c.species === state._logFilter);
+
+  if (!filtered.length) {
+    cards.appendChild(el("div", { class: "log-empty" }, [
+      el("div", { class: "log-empty-icon", html: `<svg viewBox="0 0 48 48" width="48" height="48" fill="none"><path d="M4 24c0-2 4-8 12-8h12l8-4v24l-8-4H16C8 32 4 26 4 24z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="32" cy="22" r="1.5" fill="currentColor"/></svg>` }),
+      el("div", { class: "log-empty-title" }, all.length ? "No catches in this filter" : "No catches logged yet"),
+      el("div", { class: "log-empty-sub" }, all.length ? "Try a different species filter." : "Tap + Log to record your first fish.")
+    ]));
+  } else {
+    for (const entry of filtered) {
+      cards.appendChild(renderCatchCard(entry));
+    }
+  }
+}
+
+function logStatTile(label, value, unit, color) {
+  return el("div", { class: "log-stat" }, [
+    el("div", { class: "log-stat-label" }, label),
+    el("div", { class: "log-stat-value", style: `color:${color}` }, String(value)),
+    el("div", { class: "log-stat-unit" }, unit)
+  ]);
+}
+
+function logFilterChip(label, value, active, count, color) {
+  return el("button", {
+    class: "log-filter-chip" + (active ? " active" : ""),
+    style: color ? `--chip-color:${color}` : "",
+    onclick: () => {
+      state._logFilter = value;
+      renderCatchLog();
+    }
+  }, [
+    el("span", {}, label),
+    el("span", { class: "log-filter-count" }, String(count))
+  ]);
+}
+
+function renderCatchCard(entry) {
+  const sp = LOG_SPECIES.find((s) => s.id === entry.species) || { name: entry.species || "Fish", color: "#7B8FA1", maori: "" };
+  const d = entry.date ? new Date(entry.date) : null;
+  const dateStr = d ? d.toLocaleDateString("en-NZ", { weekday: "short", day: "numeric", month: "short" }) : "";
+  const timeStr = d ? d.toLocaleTimeString("en-NZ", { hour: "2-digit", minute: "2-digit" }) : "";
+
+  return el("div", { class: "log-card" }, [
+    entry.photo
+      ? el("img", { class: "log-card-photo", src: entry.photo, alt: sp.name })
+      : el("div", { class: "log-card-photo placeholder", style: `background:${sp.color}22; color:${sp.color}` }, sp.name[0]),
+    el("div", { class: "log-card-body" }, [
+      el("div", { class: "log-card-head" }, [
+        el("div", {}, [
+          el("div", { class: "log-card-name" }, sp.name),
+          sp.maori ? el("div", { class: "log-card-maori" }, sp.maori) : null
+        ]),
+        el("div", { class: "log-card-stats" }, [
+          entry.length ? el("span", { class: "log-card-len" }, `${entry.length} cm`) : null,
+          entry.weight ? el("span", { class: "log-card-wt" }, `${entry.weight} kg`) : null
+        ])
+      ]),
+      el("div", { class: "log-card-meta" }, [
+        entry.location ? el("span", {}, `📍 ${entry.location}`) : null,
+        dateStr ? el("span", {}, `${dateStr} · ${timeStr}`) : null
+      ]),
+      entry.notes ? el("div", { class: "log-card-notes" }, entry.notes) : null,
+      el("div", { class: "log-card-actions" }, [
+        el("button", {
+          class: "log-card-btn share",
+          onclick: () => shareCatch(entry)
+        }, "↗ Share"),
+        el("button", {
+          class: "log-card-btn del",
+          onclick: () => {
+            if (!confirm(`Delete this ${sp.name.toLowerCase()} entry?`)) return;
+            state.catches = (state.catches || []).filter((c) => c.id !== entry.id);
+            saveJSON("catches", state.catches);
+            renderCatchLog();
+          }
+        }, "Delete")
+      ])
+    ])
+  ]);
+}
+
+// Generate a 1080×580 PNG social card and either share natively or download.
+async function shareCatch(entry) {
+  const sp = LOG_SPECIES.find((s) => s.id === entry.species) || { name: entry.species || "Fish", color: "#7B8FA1", maori: "" };
+  try {
+    const dataUrl = await generateCatchShareCard(entry, sp);
+    if (navigator.share) {
+      try {
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        const file = new File([blob], "ribice-catch.png", { type: "image/png" });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: `${sp.name} — Ribice` });
+          return;
+        }
+      } catch {/* fall through to download */}
+    }
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `ribice-${sp.name.toLowerCase().replace(/\s+/g, "-")}.png`;
+    a.click();
+    toast("Catch card saved");
+  } catch (e) {
+    console.error(e);
+    toast("Share failed");
+  }
+}
+
+async function generateCatchShareCard(entry, sp) {
+  const W = 1080, H = 580;
+  const c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const ctx = c.getContext("2d");
+  // Background gradient
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, "#0b1a2b");
+  bg.addColorStop(1, "#15304d");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  // Grid
+  ctx.strokeStyle = "rgba(124,196,232,0.05)"; ctx.lineWidth = 0.5;
+  for (let x = 0; x < W; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y < H; y += 40) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // Left slab — photo or species colour
+  const slabW = 440;
+  if (entry.photo) {
+    await new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        ctx.save();
+        ctx.beginPath(); ctx.rect(0, 0, slabW, H); ctx.clip();
+        const scale = Math.max(slabW / img.width, H / img.height);
+        ctx.drawImage(img, (slabW - img.width * scale) / 2, (H - img.height * scale) / 2, img.width * scale, img.height * scale);
+        ctx.restore();
+        const fade = ctx.createLinearGradient(slabW - 100, 0, slabW, 0);
+        fade.addColorStop(0, "rgba(11,26,43,0)");
+        fade.addColorStop(1, "rgba(11,26,43,1)");
+        ctx.fillStyle = fade; ctx.fillRect(slabW - 100, 0, 100, H);
+        resolve();
+      };
+      img.onerror = resolve;
+      img.src = entry.photo;
+    });
+  } else {
+    const grad = ctx.createLinearGradient(0, 0, slabW, H);
+    grad.addColorStop(0, sp.color + "44");
+    grad.addColorStop(1, sp.color + "08");
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, slabW, H);
+    ctx.fillStyle = sp.color + "33";
+    ctx.font = "bold 200px -apple-system,system-ui,sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(sp.name[0], slabW / 2, H / 2);
+    const fade = ctx.createLinearGradient(slabW - 80, 0, slabW, 0);
+    fade.addColorStop(0, "rgba(11,26,43,0)");
+    fade.addColorStop(1, "rgba(11,26,43,1)");
+    ctx.fillStyle = fade; ctx.fillRect(slabW - 80, 0, 80, H);
+  }
+  // Teal accent bar
+  ctx.fillStyle = "rgba(124,196,232,0.9)"; ctx.fillRect(0, 0, 5, H);
+  // Right text area
+  ctx.textAlign = "left"; ctx.textBaseline = "alphabetic";
+  const tx = slabW + 44;
+  let ty = 90;
+  ctx.fillStyle = "rgba(124,196,232,0.85)";
+  ctx.font = "600 14px -apple-system,system-ui,sans-serif";
+  ctx.fillText("RIBICE", tx, ty); ty += 52;
+  ctx.fillStyle = "#FFFFFF";
+  ctx.font = "bold 70px -apple-system,system-ui,sans-serif";
+  ctx.fillText(sp.name, tx, ty); ty += 20;
+  if (sp.maori) {
+    ctx.fillStyle = "rgba(255,255,255,0.4)";
+    ctx.font = "italic 26px -apple-system,system-ui,sans-serif";
+    ctx.fillText(sp.maori, tx, ty + 26); ty += 54;
+  } else ty += 30;
+  ty += 22;
+  if (entry.length) {
+    ctx.fillStyle = "#7cc4e8";
+    ctx.font = "bold 52px -apple-system,system-ui,sans-serif";
+    ctx.fillText(entry.length + " cm", tx, ty); ty += 64;
+  }
+  if (entry.weight) {
+    ctx.fillStyle = "#ffd47a";
+    ctx.font = "bold 52px -apple-system,system-ui,sans-serif";
+    ctx.fillText(entry.weight + " kg", tx, ty); ty += 64;
+  }
+  ty += 8;
+  ctx.fillStyle = "rgba(255,255,255,0.5)";
+  ctx.font = "500 22px -apple-system,system-ui,sans-serif";
+  if (entry.location) { ctx.fillText("📍 " + entry.location, tx, ty); ty += 34; }
+  if (entry.date) {
+    const d = new Date(entry.date);
+    ctx.fillText(d.toLocaleDateString("en-NZ", { weekday: "long", day: "numeric", month: "long", year: "numeric" }), tx, ty);
+  }
+  ctx.fillStyle = "rgba(124,196,232,0.35)"; ctx.fillRect(0, H - 3, W, 3);
+  return c.toDataURL("image/png");
+}
+
+// ---------- Add catch dialog ----------
+
+let _addCatchPhotoDataUrl = null;
+let _addCatchSpecies = "snapper";
+
+function openAddCatchDialog() {
+  _addCatchPhotoDataUrl = null;
+  _addCatchSpecies = "snapper";
+  const dlg = $("#addCatchDialog");
+  // Reset form fields
+  $("#addCatchLength").value = "";
+  $("#addCatchWeight").value = "";
+  $("#addCatchLocation").value = state.data?.spot?.name || "";
+  // Default datetime to now (rounded to current minute)
+  const now = new Date();
+  const localISO = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  $("#addCatchDate").value = localISO;
+  $("#addCatchNotes").value = "";
+  $("#addCatchPhoto").value = "";
+  $("#addCatchPhotoPreview").innerHTML = "";
+  renderSpeciesPicker();
+  dlg.showModal();
+}
+
+function renderSpeciesPicker() {
+  const wrap = $("#addCatchSpecies");
+  wrap.innerHTML = "";
+  for (const sp of LOG_SPECIES) {
+    const active = sp.id === _addCatchSpecies;
+    wrap.appendChild(el("button", {
+      type: "button",
+      class: "species-pick" + (active ? " active" : ""),
+      style: active ? `--pick-color:${sp.color}` : "",
+      onclick: () => { _addCatchSpecies = sp.id; renderSpeciesPicker(); }
+    }, [
+      el("span", { class: "species-pick-dot", style: `background:${sp.color}` }),
+      el("span", {}, sp.name)
+    ]));
+  }
+}
+
+async function handleAddCatchPhoto(e) {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    _addCatchPhotoDataUrl = await downscalePhoto(file, 1200);
+    $("#addCatchPhotoPreview").innerHTML = `<img src="${_addCatchPhotoDataUrl}" alt="catch photo"/>`;
+  } catch (err) {
+    console.error(err);
+    toast("Couldn't load photo");
+  }
+}
+
+// Downscale + JPEG-compress so localStorage stays under quota.
+async function downscalePhoto(file, maxDim) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL("image/jpeg", 0.82));
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
+
+function saveCatch(ev) {
+  ev?.preventDefault?.();
+  const entry = {
+    id: Date.now(),
+    species: _addCatchSpecies,
+    length: $("#addCatchLength").value.trim(),
+    weight: $("#addCatchWeight").value.trim(),
+    location: $("#addCatchLocation").value.trim(),
+    date: $("#addCatchDate").value || new Date().toISOString(),
+    notes: $("#addCatchNotes").value.trim(),
+    photo: _addCatchPhotoDataUrl
+  };
+  if (!entry.length) {
+    toast("Length is required");
+    return;
+  }
+  state.catches = [entry, ...(state.catches || [])];
+  try {
+    saveJSON("catches", state.catches);
+  } catch (err) {
+    // QuotaExceededError — likely a huge photo. Drop the photo and warn.
+    if (err.name === "QuotaExceededError") {
+      delete entry.photo;
+      state.catches[0] = entry;
+      saveJSON("catches", state.catches);
+      toast("Photo too big for offline storage — entry saved without it");
+    } else throw err;
+  }
+  $("#addCatchDialog").close();
+  renderCatchLog();
+}
+
+// ---------- NZ Regs sheet ----------
+
+function openRegsDialog() {
+  const wrap = $("#regsList");
+  wrap.innerHTML = "";
+  for (const r of NZ_REGS) {
+    const unitTxt = r.measure === "tail width" ? "mm tail" :
+                    r.measure === "shell length" ? "mm" :
+                    r.measure === "LJFL" ? "cm LJFL" : "cm";
+    wrap.appendChild(el("div", { class: "regs-row" }, [
+      el("div", { class: "regs-row-head" }, [
+        el("div", {}, [
+          el("span", { class: "regs-name" }, r.name),
+          r.maori ? el("span", { class: "regs-maori" }, r.maori) : null
+        ]),
+        el("div", { class: "regs-stats" }, [
+          r.minSize != null ? el("div", { class: "regs-stat min", style: `--regs-color:${r.color}` }, [
+            el("div", { class: "regs-stat-label" }, "Min size"),
+            el("div", { class: "regs-stat-value" }, [
+              String(r.minSize),
+              el("span", { class: "regs-stat-unit" }, unitTxt)
+            ])
+          ]) : null,
+          el("div", { class: "regs-stat bag" }, [
+            el("div", { class: "regs-stat-label" }, "Bag limit"),
+            el("div", { class: "regs-stat-value" }, String(r.bag)),
+            el("div", { class: "regs-stat-sub" }, r.bagNote)
+          ])
+        ])
+      ]),
+      r.note ? el("div", { class: "regs-note" }, "⚠ " + r.note) : null
+    ]));
+  }
+  $("#regsDialog").showModal();
+}
+
+// ---------- Spots tab ----------
+
+function renderSpotsTab() {
+  const list = $("#spotsTabList");
+  if (!list) return;
+  list.innerHTML = "";
+  for (const s of state.spots) {
+    const isActive = s.id === state.activeSpotId;
+    const isGps = s.id === "__gps__";
+    list.appendChild(el("div", { class: "spots-tab-row" + (isActive ? " active" : "") }, [
+      el("button", {
+        class: "spots-tab-pick",
+        onclick: () => {
+          state.activeSpotId = s.id;
+          saveJSON("activeSpotId", s.id);
+          refresh();
+          renderSpotsTab();
+          renderSpotPicker();
+        }
+      }, [
+        el("div", { class: "spots-tab-marker" }, isGps ? "📍" : "•"),
+        el("div", { class: "spots-tab-body" }, [
+          el("div", { class: "spots-tab-name" }, s.name),
+          el("div", { class: "spots-tab-coords" }, `${s.lat.toFixed(3)}, ${s.lon.toFixed(3)}`)
+        ]),
+        isActive ? el("span", { class: "spots-tab-active-pill" }, "Active") : null
+      ]),
+      !isGps ? el("button", {
+        class: "spots-tab-remove",
+        onclick: () => {
+          if (!confirm(`Remove ${s.name}?`)) return;
+          state.spots = state.spots.filter((x) => x.id !== s.id);
+          saveJSON("spots", state.spots);
+          if (state.activeSpotId === s.id) {
+            state.activeSpotId = state.spots[0]?.id;
+            saveJSON("activeSpotId", state.activeSpotId);
+            refresh();
+          }
+          renderSpotsTab();
+          renderSpotPicker();
+        }
+      }, "×") : null
+    ]));
+  }
+  refreshOpenMapsLinkTab();
+}
+
+function refreshOpenMapsLinkTab() {
+  const link = $("#openMapsLinkTab");
+  if (!link) return;
+  const spot = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
+  if (spot) link.href = `https://www.google.com/maps/@${spot.lat},${spot.lon},11z`;
+}
+
+// ---------- Other species ranking list ----------
+
+function renderOtherSpeciesList(scored) {
+  const wrap = $("#otherSpeciesList");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  const rest = scored.filter((s) => s.id !== state.activeSpecies);
+  for (const sp of rest) {
+    const cls = sp.score >= 70 ? "high" : sp.score >= 45 ? "mid" : "low";
+    wrap.appendChild(el("button", {
+      class: "other-sp-row",
+      onclick: () => {
+        state.activeSpecies = sp.id;
+        saveJSON("activeSpecies", sp.id);
+        // Trigger a re-render of the Forecast tab.
+        if (state.data) {
+          const { spot, hourlyAgg, dailyAgg, marine, solunar } = state.data;
+          renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
+        }
+      }
+    }, [
+      el("div", { class: "other-sp-id" }, [
+        el("div", { class: "other-sp-name" }, sp.name),
+        el("div", { class: "other-sp-maori" }, sp.maori)
+      ]),
+      el("div", { class: "other-sp-bars" },
+        sp.timeline.slice(0, 24).map((b, i) =>
+          el("span", {
+            class: "other-sp-bar " + b.band,
+            style: `height:${b.band === "hot" ? 18 : b.band === "warm" ? 12 : 5}px`
+          })
+        )
+      ),
+      el("span", { class: "other-sp-score " + cls }, String(sp.score))
+    ]));
+  }
+}
+
+// ---------- Wind compass ----------
+
+function renderWindCompass(dirDeg, windKt, gustKt) {
+  const wrap = $("#windCompass");
+  if (!wrap) return;
+  if (dirDeg == null) { wrap.innerHTML = ""; return; }
+  const dir = dirDeg;
+  const size = 140;
+  wrap.innerHTML = `
+    <svg viewBox="0 0 ${size} ${size}" width="${size}" height="${size}" class="wind-compass" aria-label="Wind compass">
+      <circle cx="${size/2}" cy="${size/2}" r="${size/2 - 6}" fill="rgba(124,196,232,0.04)" stroke="rgba(124,196,232,0.25)" stroke-width="1"/>
+      <text x="${size/2}" y="14"  text-anchor="middle" fill="#a8c0d4" font-size="11" font-weight="600">N</text>
+      <text x="${size-8}" y="${size/2+3}" text-anchor="end" fill="#7c97ad" font-size="10">E</text>
+      <text x="${size/2}" y="${size-6}" text-anchor="middle" fill="#7c97ad" font-size="10">S</text>
+      <text x="8" y="${size/2+3}" text-anchor="start" fill="#7c97ad" font-size="10">W</text>
+      <g transform="translate(${size/2} ${size/2}) rotate(${dir})">
+        <path d="M 0 ${-(size/2 - 16)} L 6 -4 L 0 -10 L -6 -4 Z" fill="#ffd47a"/>
+        <path d="M 0 ${size/2 - 16} L 6 4 L 0 10 L -6 4 Z" fill="#7cc4e8" opacity="0.6"/>
+      </g>
+      <circle cx="${size/2}" cy="${size/2}" r="3" fill="#0b1a2b" stroke="#ffd47a" stroke-width="1.5"/>
+      <text x="${size/2}" y="${size/2 + 28}" text-anchor="middle" fill="#e8eef5" font-size="16" font-weight="700">${Math.round(dir)}°</text>
+      <text x="${size/2}" y="${size/2 + 42}" text-anchor="middle" fill="#7c97ad" font-size="10" letter-spacing="1">${compass(dir)}</text>
+    </svg>
+    <div class="wind-compass-readout">
+      <div><div class="lbl">Wind</div><div class="val">${fmtWind(windKt)}</div></div>
+      <div><div class="lbl">Gust</div><div class="val">${fmtWind(gustKt)}</div></div>
+    </div>
+  `;
+}
+
 // Show version in the topbar pill so it's visible without opening settings.
 const _versionPill = document.querySelector("#versionPill");
 if (_versionPill) _versionPill.textContent = "v" + APP_VERSION;
 
 bind();
+bindTabs();
 registerSW();
 refresh();
 

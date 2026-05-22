@@ -10,19 +10,16 @@
   <link rel="apple-touch-icon" href="icons/icon.svg" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body data-tab="today">
   <header class="topbar">
     <div class="brand">
       <svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true">
-        <!-- Sun -->
         <circle cx="16" cy="14" r="7.5" fill="#ffd47a"/>
-        <!-- Chamois silhouette -->
         <path d="M11 9.5 C10.4 8.4 10 7.4 9.4 6.6 C9.2 6.3 9.4 6 9.7 6.1 C10.7 6.6 11.6 7.7 12.2 9.3 Z" fill="#ffc24a" stroke="#8a5a0a" stroke-width="0.3"/>
         <path d="M21 9.5 C21.6 8.4 22 7.4 22.6 6.6 C22.8 6.3 22.6 6 22.3 6.1 C21.3 6.6 20.4 7.7 19.8 9.3 Z" fill="#ffc24a" stroke="#8a5a0a" stroke-width="0.3"/>
         <path d="M16 10 C14 10 12.8 11.8 12.8 13.8 C12.8 15.8 13.6 17.6 16 18.5 C18.4 17.6 19.2 15.8 19.2 13.8 C19.2 11.8 18 10 16 10 Z" fill="#1a242f"/>
         <ellipse cx="14.5" cy="13.5" rx="0.6" ry="0.9" fill="#fff1c2"/>
         <ellipse cx="17.5" cy="13.5" rx="0.6" ry="0.9" fill="#fff1c2"/>
-        <!-- Waves -->
         <path d="M2 22 C5 20.5 8 22 11 20.5 C14 22 17 20.5 20 22 C23 20.5 26 22 30 20.5" stroke="#7cc4e8" stroke-width="1.6" fill="none" stroke-linecap="round"/>
         <path d="M2 26 C5 24.5 8 26 11 24.5 C14 26 17 24.5 20 26 C23 24.5 26 26 30 24.5" stroke="#7cc4e8" stroke-width="1.4" fill="none" stroke-linecap="round" opacity="0.6"/>
       </svg>
@@ -39,7 +36,9 @@
   <nav id="spotPicker" class="spot-picker" aria-label="Locations"></nav>
 
   <main id="app">
-    <section class="card hero">
+
+    <!-- ═══════════════ TODAY tab ═══════════════ -->
+    <section class="card hero" data-tab="today">
       <div class="hero-head">
         <h1 id="spotName">Loading…</h1>
         <span id="spotMeta" class="meta"></span>
@@ -54,7 +53,7 @@
       <div class="stats-row" id="nowStats"></div>
     </section>
 
-    <section class="card" id="warningsCard">
+    <section class="card" id="warningsCard" data-tab="today">
       <h2>Marine warnings <span class="muted small" id="warningsHeadline"></span></h2>
       <div id="warningsBody"></div>
       <p class="muted small" style="margin: 8px 0 0;">
@@ -62,7 +61,15 @@
       </p>
     </section>
 
-    <section class="card bite-card">
+    <section class="card" id="baitCard" data-tab="today">
+      <h2>What's working <span class="muted small">· conditions-based</span></h2>
+      <div id="baitList"></div>
+      <p class="muted small" style="margin: 8px 0 0;">
+        Bait &amp; lure picks derived from current wind, swell, water temp, time of day, season and tide phase. Not a replacement for what's actually firing on the day — talk to the locals.
+      </p>
+    </section>
+
+    <section class="card bite-card" data-tab="today">
       <h2>Bite times today <span class="muted small" id="biteHeadline"></span></h2>
       <div class="bite-grid" id="biteToday"></div>
       <details class="bite-note">
@@ -73,22 +80,23 @@
       </details>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="today">
       <h2>Best day this week <span class="muted small" id="bestDayHeadline"></span></h2>
       <div class="best-list" id="bestDayList"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="today">
       <h2>Next 48 hours <span class="muted" id="hourlyAgreement"></span></h2>
       <div class="hourly-scroll" id="hourly"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="today">
       <h2>7-day outlook</h2>
       <div class="daily" id="daily"></div>
     </section>
 
-    <section class="card">
+    <!-- ═══════════════ CONDITIONS tab ═══════════════ -->
+    <section class="card" data-tab="conditions">
       <h2>Tides today</h2>
       <div class="tide-wrap">
         <svg id="tideChart" viewBox="0 0 320 120" preserveAspectRatio="none" aria-label="Tide chart"></svg>
@@ -96,13 +104,13 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="conditions">
       <h2>Fishing intel <span class="muted small" id="fishingHeadline"></span></h2>
       <div class="swell" id="fishingIntel"></div>
       <div class="fishing-windows" id="fishingWindows"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="conditions">
       <h2>Sea temperature <span class="muted small" id="sstHeadline"></span></h2>
       <div class="sst-wrap">
         <svg id="sstChart" viewBox="0 0 320 140" preserveAspectRatio="none" aria-label="Sea temperature chart"></svg>
@@ -110,32 +118,94 @@
       </div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="conditions">
       <h2>Wind &amp; gusts <span class="muted small" id="windHeadline"></span></h2>
+      <div id="windCompass" class="wind-compass-wrap"></div>
       <div class="swell" id="windDetail"></div>
       <div class="wind-shift" id="windShift"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="conditions">
       <h2>Swell &amp; sea state</h2>
       <div class="swell" id="swell"></div>
     </section>
 
-    <section class="card">
+    <section class="card" data-tab="conditions">
+      <h2>Solunar &amp; sky</h2>
+      <div class="solunar" id="solunar"></div>
+    </section>
+
+    <section class="card" data-tab="conditions">
+      <h2>Model agreement</h2>
+      <p class="muted small">Average of five independent global weather models — ECMWF (Europe), GFS (NOAA US), ICON (Germany), GEM (Canada), BoM ACCESS-G (Australia, best for NZ region). Wider bars mean the models disagree.</p>
+      <div id="agreement"></div>
+    </section>
+
+    <section class="card" data-tab="conditions">
       <h2>Cross-check this spot</h2>
       <p class="muted small">No public API for these — tap to open their forecast for the active spot.</p>
       <div class="xlinks" id="xlinks"></div>
     </section>
 
-    <section class="card">
-      <h2>Solunar &amp; sky</h2>
-      <div class="solunar" id="solunar"></div>
+    <!-- ═══════════════ FORECAST tab (species panel) ═══════════════ -->
+    <section class="card species-card" id="catchCard" data-tab="forecast">
+      <h2>Catch forecast <span class="muted small" id="catchHeadline"></span></h2>
+      <div class="species-chips" id="speciesChips"></div>
+      <div class="species-active" id="speciesActive"></div>
+      <p class="muted small" style="margin: 12px 0 0;">
+        Score combines current SST vs species range, month vs peak season,
+        solunar quality in daylight, tide flow, pressure trend and sea state.
+        Not real-time observations — bring local knowledge.
+      </p>
     </section>
 
-    <section class="card">
-      <h2>Model agreement</h2>
-      <p class="muted small">Average of five independent global weather models — ECMWF (Europe), GFS (NOAA US), ICON (Germany), GEM (Canada), BoM ACCESS-G (Australia, best for NZ region). Wider bars mean the models disagree.</p>
-      <div id="agreement"></div>
+    <section class="card" data-tab="forecast">
+      <h2>Other species <span class="muted small">· today's ranking</span></h2>
+      <div id="otherSpeciesList"></div>
+    </section>
+
+    <!-- ═══════════════ LOG tab (catch journal) ═══════════════ -->
+    <section class="card" data-tab="log">
+      <div class="log-header">
+        <div>
+          <div class="log-eyebrow">Personal record</div>
+          <h2 style="margin: 4px 0 0;">Catch log <span class="muted small" id="logCount"></span></h2>
+        </div>
+        <div class="log-actions">
+          <button id="openRegsBtn" class="ghost-btn">Regs</button>
+          <button id="openAddCatchBtn" class="primary-btn"><span class="plus">+</span> Log</button>
+        </div>
+      </div>
+      <div id="logStats" class="log-stats" hidden></div>
+      <div id="logBest" class="log-best" hidden></div>
+      <div id="logFilters" class="log-filters" hidden></div>
+      <div id="logCards" class="log-cards"></div>
+    </section>
+
+    <!-- ═══════════════ SPOTS tab ═══════════════ -->
+    <section class="card" data-tab="spots">
+      <h2>Your spots</h2>
+      <div id="spotsTabList" class="spots-tab-list"></div>
+      <div class="spots-tab-actions">
+        <button id="useGPSBtn" class="primary-btn">📍 Use my location</button>
+      </div>
+    </section>
+
+    <section class="card" data-tab="spots">
+      <h2>Add a spot</h2>
+      <div class="search-spot">
+        <input type="search" id="placeSearchTab" placeholder="Search NZ (e.g. Cape Brett, Tairua)" autocomplete="off"/>
+        <button type="button" id="searchBtnTab">Search</button>
+      </div>
+      <div id="searchResultsTab" class="search-results"></div>
+      <p class="muted small" style="margin: 14px 0 4px;">Or add manually:</p>
+      <div class="add-spot">
+        <input type="text" id="newSpotNameTab" placeholder="Name"/>
+        <input type="number" id="newSpotLatTab" placeholder="Lat" step="0.0001"/>
+        <input type="number" id="newSpotLonTab" placeholder="Lon" step="0.0001"/>
+        <button type="button" id="addSpotBtnTab">Add</button>
+      </div>
+      <a href="#" target="_blank" rel="noopener" id="openMapsLinkTab" class="open-maps-link">📍 Open Google Maps — long-press on a spot to copy its coords</a>
     </section>
 
     <p class="footer-note">
@@ -144,6 +214,45 @@
     </p>
   </main>
 
+  <!-- ═══════════════ Bottom nav ═══════════════ -->
+  <nav class="bottom-nav" aria-label="Tabs">
+    <button class="nav-tab active" data-tab="today" aria-label="Today">
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <path d="M3 11l8-6 8 6v8a1 1 0 0 1-1 1h-4v-5h-6v5H4a1 1 0 0 1-1-1v-8z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      </svg>
+      <span>Today</span>
+    </button>
+    <button class="nav-tab" data-tab="conditions" aria-label="Conditions">
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <circle cx="11" cy="9" r="3" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M3 16c2-2 4-2 6 0s4 2 6 0s2 0 2 0M3 19c2-2 4-2 6 0s4 2 6 0s2 0 2 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/>
+      </svg>
+      <span>Conditions</span>
+    </button>
+    <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
+      <svg viewBox="0 0 26 22" width="26" height="22" fill="none" aria-hidden="true">
+        <path d="M2 11 Q 7 5,18 6 Q 22 7,24 11 Q 22 15,18 16 Q 7 17,2 11 L 0 7 L 3 11 L 0 15 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <circle cx="19" cy="10" r="0.9" fill="currentColor"/>
+      </svg>
+      <span>Forecast</span>
+    </button>
+    <button class="nav-tab" data-tab="log" aria-label="Log">
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <rect x="4" y="3" width="14" height="16" rx="2" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M7 7h8M7 11h8M7 15h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+      </svg>
+      <span>Log</span>
+    </button>
+    <button class="nav-tab" data-tab="spots" aria-label="Spots">
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <path d="M11 2C7.7 2 5 4.7 5 8c0 4.5 6 11 6 11s6-6.5 6-11c0-3.3-2.7-6-6-6z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <circle cx="11" cy="8" r="2.4" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <span>Spots</span>
+    </button>
+  </nav>
+
+  <!-- ═══════════════ Settings dialog (gear icon) ═══════════════ -->
   <dialog id="settingsDialog" class="settings">
     <form method="dialog">
       <h2>Your thresholds</h2>
@@ -190,6 +299,64 @@
         <button value="save" id="saveBtn">Save</button>
       </menu>
     </form>
+  </dialog>
+
+  <!-- ═══════════════ Add catch sheet ═══════════════ -->
+  <dialog id="addCatchDialog" class="sheet">
+    <form id="addCatchForm" method="dialog">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div>
+          <div class="log-eyebrow">New entry</div>
+          <h2 style="margin: 4px 0 0;">Log a catch</h2>
+        </div>
+        <button type="button" class="sheet-close" id="closeAddCatchBtn" aria-label="Close">×</button>
+      </div>
+
+      <label class="field-label">Species</label>
+      <div id="addCatchSpecies" class="species-picker"></div>
+
+      <label class="field-label">Length (cm)</label>
+      <input type="number" id="addCatchLength" inputmode="decimal" step="0.1" min="0" placeholder="e.g. 42"/>
+
+      <label class="field-label">Weight (kg) <span class="optional">— optional</span></label>
+      <input type="number" id="addCatchWeight" inputmode="decimal" step="0.1" min="0" placeholder="e.g. 2.1"/>
+
+      <label class="field-label">Location</label>
+      <input type="text" id="addCatchLocation" placeholder="e.g. Cape Brett pinnacles"/>
+
+      <label class="field-label">Date &amp; time</label>
+      <input type="datetime-local" id="addCatchDate"/>
+
+      <label class="field-label">Photo <span class="optional">— optional</span></label>
+      <input type="file" id="addCatchPhoto" accept="image/*" capture="environment"/>
+      <div id="addCatchPhotoPreview" class="photo-preview"></div>
+
+      <label class="field-label">Notes <span class="optional">— optional</span></label>
+      <textarea id="addCatchNotes" rows="2" placeholder="Bait, technique, anything memorable"></textarea>
+
+      <menu>
+        <button type="button" class="ghost" id="cancelAddCatchBtn">Cancel</button>
+        <button type="submit" id="saveCatchBtn">Save catch</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <!-- ═══════════════ NZ Regs sheet ═══════════════ -->
+  <dialog id="regsDialog" class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-head">
+      <div>
+        <div class="log-eyebrow">MPI guidelines</div>
+        <h2 style="margin: 4px 0 0;">Size &amp; bag limits</h2>
+      </div>
+      <button type="button" class="sheet-close" id="closeRegsBtn" aria-label="Close">×</button>
+    </div>
+    <p class="muted small">Recreational limits for NZ saltwater species. Always verify at <a href="https://www.mpi.govt.nz/fishing-aquaculture/recreational-fishing/fishing-rules/" target="_blank" rel="noopener">mpi.govt.nz</a> — rules vary by region and change.</p>
+    <div id="regsList" class="regs-list"></div>
+    <p class="muted small" style="margin-top: 14px;">
+      Regional rules, closed seasons and special fishing areas may apply. This card is a quick reference, not legal advice.
+    </p>
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
