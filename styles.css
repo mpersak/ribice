@@ -20,12 +20,15 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* Solid dark on the html root so the Android system-nav area (gesture pill /
+   three-button bar) never bleeds white when the page over-scrolls or the
+   manifest theme-color doesn't override it. */
+html { background: #081320; }
 body {
   background: linear-gradient(180deg, #0b1a2b 0%, #081320 100%);
   color: var(--ink);
   min-height: 100vh;
   min-height: 100dvh;
-  padding-bottom: env(safe-area-inset-bottom);
 }
 
 a { color: var(--accent); }
@@ -938,22 +941,26 @@ main { padding: 0 16px 32px; display: flex; flex-direction: column; gap: 14px; m
 /* ═══════════════ Tab routing ═══════════════ */
 main [data-tab] { display: none; }
 main [data-tab].tab-active { display: block; }
-body { padding-bottom: 76px; }
+/* Reserve room for the bottom nav AND any system-nav safe area below it,
+   so content can scroll above the nav and content never sits behind it. */
+body { padding-bottom: calc(76px + env(safe-area-inset-bottom)); }
 body[data-tab="log"] #spotPicker,
 body[data-tab="spots"] #spotPicker { display: none; }
 
-/* Bottom nav */
+/* Bottom nav — solid dark, no backdrop transparency. The translucent
+   variant looked great in dev but exposed white in Android's system-nav
+   safe area on some phones. Solid bg is the safe bet. */
 .bottom-nav {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
-  background: rgba(11, 26, 43, 0.94);
-  backdrop-filter: saturate(160%) blur(14px);
-  -webkit-backdrop-filter: saturate(160%) blur(14px);
+  background: #0b1a2b;
   border-top: 1px solid var(--border);
   padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
   z-index: 50;
+  /* Extend the dark bg into the system-nav safe area on PWA standalone. */
+  box-shadow: 0 30px 0 0 #0b1a2b;
 }
 .nav-tab {
   display: flex;
