@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-12";
+const APP_VERSION = "2026.05.22-13";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2525,8 +2525,11 @@ function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
 
 // Build one day's bar sparkline cell — 6 bars covering 4-hour chunks (00-03,
 // 04-07, 08-11, 12-15, 16-19, 20-23). Each bar height = max value in its
-// bucket relative to the week's max. Colours: green / amber / red by absolute
-// thresholds so a calm day looks visibly different from a rough day.
+// bucket relative to the week's max. Colours are driven by the USER's own
+// thresholds so a green bar always means "passes your scoring" and an amber
+// bar always means "approaching your limit" — keeps the visualization
+// honest with the score. (Previously hardcoded 12/22 kt cutoffs disagreed
+// with the user's 15 kt threshold — a green-scoring day showed amber bars.)
 function weekBarCell(hourlyData, dayKey, field, maxVal, kind, convert) {
   const times = hourlyData.time;
   const vals = hourlyData[field];
@@ -2538,6 +2541,7 @@ function weekBarCell(hourlyData, dayKey, field, maxVal, kind, convert) {
     const b = Math.floor(hr / 4);
     if (b >= 0 && b < 6) buckets[b].push(convert(vals[i]));
   }
+  const t = state.thresholds;
   const W = 42, H = 24;
   const barW = (W / 6) - 1;
   let svg = `<svg viewBox="0 0 ${W} ${H}" class="wg-bars" preserveAspectRatio="none" aria-hidden="true">`;
@@ -2546,9 +2550,22 @@ function weekBarCell(hourlyData, dayKey, field, maxVal, kind, convert) {
     const v = Math.max(...buckets[b]);
     const h = Math.max(2, Math.min(H, (v / maxVal) * H));
     const x = b * (W / 6);
-    const color = kind === "wind"
-      ? (v < 12 ? "#6fdc8c" : v < 22 ? "#ffd47a" : "#ff7a7a")
-      : (v < 0.8 ? "#6fdc8c" : v < 1.5 ? "#ffd47a" : "#ff7a7a");
+    // Colour bands relative to the user's threshold for this metric:
+    //   green = under threshold (passes scoring)
+    //   amber = approaching / between wind and gust limits
+    //   red   = over (fails scoring)
+    let color;
+    if (kind === "wind") {
+      color = v < t.maxWindKt ? "#6fdc8c"
+            : v < t.maxGustKt ? "#ffd47a"
+            : "#ff7a7a";
+    } else {
+      // swell: amber kicks in at 70% of the wave limit so the user gets a
+      // "getting choppy" warning before the hard fail.
+      color = v < t.maxWaveM * 0.7 ? "#6fdc8c"
+            : v < t.maxWaveM ? "#ffd47a"
+            : "#ff7a7a";
+    }
     svg += `<rect x="${x.toFixed(1)}" y="${(H - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="1"/>`;
   }
   svg += `</svg>`;
