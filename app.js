@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-10";
+const APP_VERSION = "2026.05.22-11";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2162,9 +2162,8 @@ function renderHero(h, marine, daily, dailyScores) {
   }
   $("#verdictDetail").textContent = detail;
 
-  // Arc gauge — 0-100 score with an animated sweep around the ring. Replaces
-  // the flat chip with a Tight-Lines-style circular gauge.
-  const todayScore = dailyScores && dailyScores[0] ? dailyScores[0].score : null;
+  // Arc gauge — 0-100 score with an animated sweep around the ring.
+  // (todayScore already declared above for the headline-band logic.)
   let chip = $("#verdictScore");
   if (!chip) {
     chip = el("div", { id: "verdictScore", class: "verdict-score" });
