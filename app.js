@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-17";
+const APP_VERSION = "2026.05.22-18";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -680,6 +680,26 @@ function hourVerdict(h, marineHour) {
   return "red";
 }
 
+// Boating-specific verdict — same as hourVerdict but IGNORES temperature.
+// Air temp is a comfort thing ("wear a jacket"), not a safety thing — a
+// 10°C morning with flat sea and no wind is perfectly fine to be on. Used
+// only by computeBoatingScores; the FISH formula and hour-card colouring
+// keep the full hourVerdict so cold mornings still flag for fish behaviour
+// and personal comfort calls.
+function boatingHourCheck(h, marineHour) {
+  const t = state.thresholds;
+  const windKt = (h.wind_speed_10m || 0) * KMH_TO_KT;
+  const gustKt = (h.wind_gusts_10m || 0) * KMH_TO_KT;
+  const wave   = marineHour?.wave_height ?? 0;
+  const rain   = h.precipitation || 0;
+  let breaches = 0;
+  if (windKt > t.maxWindKt) breaches++;
+  if (gustKt > t.maxGustKt) breaches++;
+  if (wave > t.maxWaveM) breaches++;
+  if (rain > t.maxRainMm) breaches++;
+  return breaches === 0 ? "green" : breaches <= 1 ? "amber" : "red";
+}
+
 // 0-100 "fishability" for a single hour. Smooth — each metric contributes
 // proportionally to its distance from threshold so the bar tells you "how
 // nice" rather than just pass/fail. Used by the hour cards.
@@ -935,7 +955,10 @@ function computeBoatingScores(daily, hourly, marine) {
       const cur = sliceHour(hourly, i);
       const mIdx = marine ? indexAtTime(marine.hourly.time, hourly.time[i]) : -1;
       const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
-      if (hourVerdict(cur, mCur) === "green") greenHrs++;
+      // Boating-specific check — ignores air temperature (a cold morning
+      // is a jacket problem, not a safety problem). Calm-but-cold days
+      // now correctly score 100 like calm-and-warm days do.
+      if (boatingHourCheck(cur, mCur) === "green") greenHrs++;
     }
     const score = dayIdxs.length ? Math.round((greenHrs / dayIdxs.length) * 100) : 50;
     out.push({ date: dayKey, score });
