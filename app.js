@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-21";
+const APP_VERSION = "2026.05.22-22";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
