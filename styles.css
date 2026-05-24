@@ -947,7 +947,13 @@ main { padding: 0 16px 32px; display: flex; flex-direction: column; gap: 14px; m
   font-style: italic;
 }
 
-/* Toast */
+/* Toast — display:flex when visible, but the [hidden] HTML attribute MUST
+   win when present. Without the explicit `[hidden]` reset, browsers
+   apply UA `[hidden] { display: none }` but our `display: flex` declaration
+   has higher specificity and overrides it — leaving an empty toast pill
+   sitting at bottom:24px / left:50%, exactly where the Forecast nav tab
+   lives. That's what was eating the fish icon for 15+ iterations. */
+.toast[hidden] { display: none !important; }
 .toast {
   position: fixed;
   left: 50%;
