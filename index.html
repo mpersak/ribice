@@ -244,21 +244,16 @@
       <span>Conditions</span>
     </button>
     <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
-      <!-- Diagnosed v24: my "tail triangle" had its WIDE BASE on the left
-           (vertical edge from (1,2) to (1,16)) and POINT on the right.
-           Combined with the bulging body, the silhouette was flat-left +
-           round-right = D shape, exactly what the user kept seeing.
-           Fix: forked tail — point on the right (body attachment), two
-           lobes spreading outward to the LEFT with a notch between them.
-           Now the left edge has actual tail-shaped features, not a
-           straight line. -->
-      <svg viewBox="0 0 28 18" width="28" height="18" aria-hidden="true" class="nav-fish-svg">
-        <!-- Forked tail: M body-attach → top lobe tip → notch → bottom lobe tip → close -->
-        <path d="M 12 9 L 1 2 L 5 9 L 1 16 Z" fill="currentColor"/>
-        <!-- Body ellipse, overlaps tail's right point so they fuse -->
-        <ellipse cx="18" cy="9" rx="9" ry="6" fill="currentColor"/>
-        <!-- Eye cut-out on head, matches nav bg colour -->
-        <circle cx="22" cy="7" r="1.2" fill="#0b1a2b"/>
+      <!-- Stroke-only fish — same style as the other 4 nav icons (Today,
+           Conditions, Log, Spots): viewBox 22x22, fill="none", single
+           stroke path at 1.6 width. Single continuous outline traces the
+           full fish silhouette: head → top of body → top tail-attach →
+           top tail tip → notch → bottom tail tip → bottom tail-attach →
+           bottom of body → close. -->
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <path d="M 17 6 Q 11 5, 9 8 L 2 4 L 6 11 L 2 18 L 9 14 Q 11 17, 17 16 Q 20 14, 20 11 Q 20 8, 17 6 Z"
+              stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        <circle cx="16" cy="10" r="0.9" fill="currentColor"/>
       </svg>
       <span>Forecast</span>
     </button>

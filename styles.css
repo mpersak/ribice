@@ -1050,13 +1050,8 @@ body[data-tab="spots"] #spotPicker { display: none; }
   color: var(--accent);
   background: rgba(124, 196, 232, 0.08);
 }
-/* Forecast tab fish — solid filled SVG. Fill inherits from .nav-tab color
-   so it tints muted when inactive and accent-blue when active, matching
-   the other nav icons' behaviour. The cut-out eye stays #0b1a2b
-   regardless so it reads as a hole in the body. */
-.nav-fish-svg {
-  display: block;
-}
+/* Forecast tab fish is now styled by the same .nav-tab svg rule as the
+   other icons — no custom class needed. */
 
 /* ═══════════════ Score arc gauge ═══════════════ */
 .verdict-score.gauge {
