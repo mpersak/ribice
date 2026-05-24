@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-11";
+const APP_VERSION = "2026.05.22-12";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -799,34 +799,45 @@ function renderForTab(tabId) {
     if (!state.data) return;
 
     const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
-    let dailyScores;
+    let dailyScores, boatingScores;
     try {
       dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
     } catch (e) {
       console.error("computeDailyScores failed:", e);
       dailyScores = [];
     }
+    try {
+      boatingScores = computeBoatingScores(dailyAgg, hourlyAgg, marine);
+    } catch (e) {
+      console.error("computeBoatingScores failed:", e);
+      boatingScores = [];
+    }
 
     if (tabId === "today") {
-      safeRender("Hero",     () => renderHero(hourlyAgg, marine, dailyAgg, dailyScores));
+      safeRender("Hero",     () => renderHero(hourlyAgg, marine, dailyAgg, dailyScores, boatingScores));
       safeRender("Warnings", () => renderWarnings(hourlyAgg, marine));
       safeRender("Bait",     () => renderBaitCard(hourlyAgg, marine));
-      safeRender("WeekGrid", () => renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores));
+      safeRender("WeekGrid", () => renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores, boatingScores));
       safeRender("Hourly",   () => renderHourly(hourlyAgg, marine));
     } else if (tabId === "conditions") {
-      safeRender("BestDay",   () => renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores));
+      // Conditions merged from 10 cards to 7: Daily breakdown (best-day +
+      // 7-day merged), Tides & flow (tide chart + tide bits from fishing
+      // intel), Pressure (extracted), Wind, Swell, Sea temp, Solunar, Model
+      // agreement. Cross-check moved to Spots tab.
       safeRender("Daily",     () => renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores));
       safeRender("Tides",     () => renderTides(marine));
-      safeRender("Fishing",   () => renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar));
+      safeRender("TidesFlow", () => renderTidesFlow(marine, hourlyAgg, dailyAgg, spot, solunar));
+      safeRender("Pressure",  () => renderPressureCard(hourlyAgg));
       safeRender("SeaTemp",   () => renderSeaTemp(marine));
       safeRender("Wind",      () => renderWind(hourlyAgg));
       safeRender("Swell",     () => renderSwell(marine, hourlyAgg));
-      safeRender("XLinks",    () => renderXLinks(spot));
       safeRender("Solunar",   () => renderSolunar(spot, dailyAgg, air, solunar));
       safeRender("Agreement", () => renderAgreement(hourlyAgg));
     } else if (tabId === "forecast") {
       safeRender("BiteTimes", () => renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg));
       safeRender("Catch",     () => renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar));
+    } else if (tabId === "spots") {
+      safeRender("XLinks",    () => renderXLinks(spot));
     }
   } catch (e) {
     console.error("renderForTab dispatcher failed:", e);
@@ -866,9 +877,39 @@ function showFatalError(e) {
   }
 }
 
+// "Boating" score per day — pure safety/comfort (wind + gust + swell + rain +
+// temp). Just the % of daylight hours that pass your thresholds, on a 0-100
+// scale. Decouples "is it safe and pleasant to be on the water" from the
+// fishing-specific factors (tide, solunar, pressure). When this is high and
+// the fishing score is low, you're getting a beautiful day but a slow bite —
+// exactly what was confusing the user on Thursday.
+function computeBoatingScores(daily, hourly, marine) {
+  const out = [];
+  for (let d = 0; d < daily.time.length; d++) {
+    const dayKey = daily.time[d];
+    const dayIdxs = [];
+    for (let i = 0; i < hourly.time.length; i++) {
+      if (!hourly.time[i].startsWith(dayKey)) continue;
+      const hh = new Date(hourly.time[i]).getHours();
+      if (hh >= 6 && hh <= 20) dayIdxs.push(i);
+    }
+    let greenHrs = 0;
+    for (const i of dayIdxs) {
+      const cur = sliceHour(hourly, i);
+      const mIdx = marine ? indexAtTime(marine.hourly.time, hourly.time[i]) : -1;
+      const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
+      if (hourVerdict(cur, mCur) === "green") greenHrs++;
+    }
+    const score = dayIdxs.length ? Math.round((greenHrs / dayIdxs.length) * 100) : 50;
+    out.push({ date: dayKey, score });
+  }
+  return out;
+}
+
 // Per-day 0-100 score + a "peak window" — the longest run of green hours
 // within daylight for the day. Shared between the hero, the 7-day row badge,
-// and the Best-day card so all three agree.
+// and the Best-day card so all three agree. This is the FISHING score
+// (weather + tide + solunar + pressure).
 function computeDailyScores(daily, hourly, marine, spot) {
   const out = [];
   for (let d = 0; d < daily.time.length; d++) {
@@ -925,14 +966,26 @@ function computeDailyScores(daily, hourly, marine, spot) {
     const solScore01 = solunarDayScore(dayDate, spot.lon, daily.sunrise?.[d], daily.sunset?.[d]) / 100;
     const solComp = solScore01 * 25;
 
-    // 4) Barometric trend (0-20).
+    // 4) Barometric trend (0-20) — bimodal. Both rising (post-front recovery)
+    //    AND moderately falling (pre-front feeding window) score well; only
+    //    flat-steady and frontal-crash score low. Reflects what actual
+    //    fishermen know: "fish before the storm" is a real thing.
     let barScore = 10;
+    let dPSigned = null;
     if (allIdxs.length >= 12 && hourly.pressure_msl) {
       const pStart = hourly.pressure_msl[allIdxs[0]];
       const pEnd = hourly.pressure_msl[allIdxs[allIdxs.length - 1]];
       if (pStart != null && pEnd != null) {
-        const norm = Math.max(-1, Math.min(1, (pEnd - pStart) / 4));
-        barScore = 10 + norm * 10;
+        dPSigned = pEnd - pStart;
+        const absDP = Math.abs(dPSigned);
+        // Sweet spot for active feeding: ~1–5 hPa change (either direction).
+        // Steady (|dP|≈0) is meh, crashing (|dP|>6) is bad.
+        const goodness = Math.min(absDP / 4, 1);    // 0 at steady, 1 at ±4 hPa
+        barScore = 10 + goodness * 8;                // 10 (steady) → 18 (±4 hPa)
+        if (absDP > 6) {
+          // Rapid change = front arriving / passing through. Walk it back.
+          barScore = Math.max(4, barScore - (absDP - 6) * 3);
+        }
       }
     }
 
@@ -944,8 +997,13 @@ function computeDailyScores(daily, hourly, marine, spot) {
     if (tideScore > 18) reasons.push("spring tides");
     else if (tideScore < 7) reasons.push("neap tides");
     if (solComp > 18) reasons.push("strong solunar");
-    if (barScore > 16) reasons.push("rising pressure");
-    else if (barScore < 4) reasons.push("falling pressure");
+    // Pressure reasons — credit rising AND pre-front falling, flag frontal crash
+    if (dPSigned != null) {
+      const absDP = Math.abs(dPSigned);
+      if (absDP > 6) reasons.push("front passing");
+      else if (dPSigned > 1.5) reasons.push("rising pressure");
+      else if (dPSigned < -1.5) reasons.push("pre-front feed");
+    }
 
     out.push({
       date: dayKey,
@@ -2113,7 +2171,7 @@ function renderXLinks(spot) {
   }
 }
 
-function renderHero(h, marine, daily, dailyScores) {
+function renderHero(h, marine, daily, dailyScores, boatingScores) {
   // Pick the upcoming hour.
   const now = Date.now();
   let idx = 0;
@@ -2162,33 +2220,21 @@ function renderHero(h, marine, daily, dailyScores) {
   }
   $("#verdictDetail").textContent = detail;
 
-  // Arc gauge — 0-100 score with an animated sweep around the ring.
-  // (todayScore already declared above for the headline-band logic.)
-  let chip = $("#verdictScore");
-  if (!chip) {
-    chip = el("div", { id: "verdictScore", class: "verdict-score" });
-    $("#verdict").appendChild(chip);
+  // Dual arc gauges — Boating (safety/comfort) + Fishing (full formula). Two
+  // numbers always agree about wind/swell but disagree when tide/pressure
+  // drag fishing down. Resolves the "calm day, low score" confusion.
+  const boatScore = boatingScores && boatingScores[0] ? boatingScores[0].score : null;
+  let dualWrap = $("#verdictGauges");
+  if (!dualWrap) {
+    // Remove the old single-chip if present (legacy markup).
+    const oldChip = $("#verdictScore");
+    if (oldChip) oldChip.remove();
+    dualWrap = el("div", { id: "verdictGauges", class: "verdict-gauges" });
+    $("#verdict").appendChild(dualWrap);
   }
-  if (todayScore != null) {
-    const cls = todayScore >= 70 ? "high" : todayScore >= 45 ? "mid" : "low";
-    chip.className = "verdict-score gauge " + cls;
-    const r = 28, c = 2 * Math.PI * r; // circumference
-    const dash = (todayScore / 100) * c;
-    const ringColor = cls === "high" ? "#6fdc8c" : cls === "mid" ? "#ffd47a" : "#ff7a7a";
-    chip.innerHTML = `
-      <svg viewBox="0 0 72 72" class="gauge-svg" aria-hidden="true">
-        <circle cx="36" cy="36" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"/>
-        <circle cx="36" cy="36" r="${r}" fill="none"
-                stroke="${ringColor}" stroke-width="6" stroke-linecap="round"
-                stroke-dasharray="${dash.toFixed(1)} ${(c - dash).toFixed(1)}"
-                transform="rotate(-90 36 36)"
-                style="filter:drop-shadow(0 0 6px ${ringColor}88)"/>
-      </svg>
-      <div class="gauge-text">
-        <div class="n">${todayScore}</div>
-        <div class="of">/100</div>
-      </div>`;
-  }
+  dualWrap.innerHTML = "";
+  dualWrap.appendChild(buildGauge("Boat", boatScore));
+  dualWrap.appendChild(buildGauge("Fish", todayScore));
 
   // Quick-status pills row: tide direction, UV, moon. Tight summary strip
   // below the verdict, before the now-stats. Reused from Tight-Lines hero.
@@ -2234,6 +2280,30 @@ function renderHero(h, marine, daily, dailyScores) {
     statTile("Pressure", cur.pressure_msl != null ? `${Math.round(cur.pressure_msl)} hPa` : "—", pressureSub),
     statTile("UV", uv != null ? String(Math.round(uv)) : "—", uvLabelTile)
   );
+}
+
+// Build one dual-gauge: 64px ring with score, label below.
+function buildGauge(label, score) {
+  const wrap = el("div", { class: "dual-gauge" });
+  const cls = score == null ? "" : score >= 70 ? "high" : score >= 45 ? "mid" : "low";
+  wrap.classList.add(cls || "low");
+  const r = 24, c = 2 * Math.PI * r;
+  const dash = score != null ? (score / 100) * c : 0;
+  const ringColor = cls === "high" ? "#6fdc8c" : cls === "mid" ? "#ffd47a" : "#ff7a7a";
+  wrap.innerHTML = `
+    <svg viewBox="0 0 60 60" class="dual-gauge-svg" aria-label="${label} score">
+      <circle cx="30" cy="30" r="${r}" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="5"/>
+      ${score != null ? `<circle cx="30" cy="30" r="${r}" fill="none"
+                stroke="${ringColor}" stroke-width="5" stroke-linecap="round"
+                stroke-dasharray="${dash.toFixed(1)} ${(c - dash).toFixed(1)}"
+                transform="rotate(-90 30 30)"
+                style="filter:drop-shadow(0 0 4px ${ringColor}88)"/>` : ""}
+      <text x="30" y="34" text-anchor="middle" font-size="17" font-weight="700"
+            fill="${score == null ? "rgba(255,255,255,0.4)" : ringColor}"
+            font-variant-numeric="tabular-nums">${score != null ? score : "—"}</text>
+    </svg>
+    <div class="dual-gauge-label">${label}</div>`;
+  return wrap;
 }
 
 // "↑ Rising 1.8m" / "↓ Falling 0.3m" based on next tide event.
@@ -2301,7 +2371,7 @@ function renderHourly(h, marine) {
 // badge per day. Replaces the old 7-day card on Today — answers the user's
 // "I just need to know wind / swell / temp for the week" question in one
 // glance instead of forcing them to scroll through detail cards.
-function renderWeekGrid(daily, hourly, marine, dailyScores) {
+function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
   const wrap = $("#weekGrid");
   const headline = $("#weekHeadline");
   if (!wrap) return;
@@ -2362,9 +2432,86 @@ function renderWeekGrid(daily, hourly, marine, dailyScores) {
   }
   wrap.appendChild(tempRow);
 
-  // SCORE row
+  // TIDE row — mini bar showing each day's tidal range as a fraction of the
+  // Auckland spring max (~3.4m). Lets the user see "neap tides" at a glance.
+  const tideRow = el("div", { class: "wg-row" });
+  tideRow.appendChild(el("div", { class: "wg-row-label" }, "TIDE"));
+  for (let d = 0; d < days; d++) {
+    if (marine?.hourly?.sea_level_height_msl) {
+      const dayKey = daily.time[d];
+      const times = marine.hourly.time;
+      const heights = marine.hourly.sea_level_height_msl;
+      const todayH = [];
+      for (let i = 0; i < times.length; i++) {
+        if (times[i].startsWith(dayKey) && heights[i] != null) todayH.push(heights[i]);
+      }
+      if (todayH.length) {
+        const range = Math.max(...todayH) - Math.min(...todayH);
+        // Spring tide ~3.4m, neap ~1.7m for Auckland. Normalise.
+        const pct = Math.max(0, Math.min(1, (range - 1.5) / (3.4 - 1.5)));
+        const color = pct > 0.7 ? "#6fdc8c" : pct > 0.4 ? "#ffd47a" : "#7c97ad";
+        tideRow.appendChild(el("div", { class: "wg-day wg-tide", html: `
+          <svg viewBox="0 0 42 18" preserveAspectRatio="none" aria-label="Tide range ${range.toFixed(1)}m">
+            <rect x="2" y="6" width="38" height="6" rx="2" fill="rgba(255,255,255,0.06)"/>
+            <rect x="2" y="6" width="${(38 * pct).toFixed(1)}" height="6" rx="2" fill="${color}"/>
+            <text x="21" y="17" font-size="8" text-anchor="middle" fill="${color}" font-family="ui-monospace,monospace">${range.toFixed(1)}m</text>
+          </svg>` }));
+      } else {
+        tideRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
+      }
+    } else {
+      tideRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
+    }
+  }
+  wrap.appendChild(tideRow);
+
+  // PRESSURE row — single arrow per day based on the day's first-to-last
+  // pressure delta. Up = good (front passing), down = bad (front coming).
+  const pRow = el("div", { class: "wg-row" });
+  pRow.appendChild(el("div", { class: "wg-row-label" }, "PRES"));
+  for (let d = 0; d < days; d++) {
+    if (hourly.pressure_msl) {
+      const dayKey = daily.time[d];
+      const idxs = [];
+      for (let i = 0; i < hourly.time.length; i++) {
+        if (hourly.time[i].startsWith(dayKey) && hourly.pressure_msl[i] != null) idxs.push(i);
+      }
+      if (idxs.length >= 2) {
+        const dP = hourly.pressure_msl[idxs[idxs.length - 1]] - hourly.pressure_msl[idxs[0]];
+        const arrow = dP > 2 ? "↗" : dP > 0.5 ? "↗" : dP < -2 ? "↘" : dP < -0.5 ? "↘" : "→";
+        const cls = dP > 0.5 ? "up" : dP < -0.5 ? "down" : "steady";
+        pRow.appendChild(el("div", { class: "wg-day wg-pres " + cls }, [
+          el("span", { class: "wg-pres-arrow" }, arrow),
+          el("span", { class: "wg-pres-delta" }, `${dP >= 0 ? "+" : ""}${dP.toFixed(0)}`)
+        ]));
+      } else {
+        pRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
+      }
+    } else {
+      pRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
+    }
+  }
+  wrap.appendChild(pRow);
+
+  // BOAT score row — pure safety/comfort (wind+swell+temp+rain). Calm-but-
+  // unfishy days (like this Thursday) jump out here, addressing the
+  // "boatie friend says Thursday is great" feedback.
+  const boatRow = el("div", { class: "wg-row" });
+  boatRow.appendChild(el("div", { class: "wg-row-label" }, "BOAT"));
+  const topBoat = Math.max(0, ...(boatingScores || []).map((s) => s?.score || 0));
+  for (let d = 0; d < days; d++) {
+    const s = boatingScores?.[d]?.score;
+    const cls = s == null ? "" : s >= 70 ? "high" : s >= 45 ? "mid" : "low";
+    const isTop = s != null && s === topBoat && topBoat > 50;
+    boatRow.appendChild(el("div", { class: "wg-day" + (isTop ? " wg-top" : "") }, [
+      el("span", { class: "wg-score-badge " + cls }, s != null ? String(s) : "—")
+    ]));
+  }
+  wrap.appendChild(boatRow);
+
+  // FISH score row — full formula (weather + tide + solunar + pressure).
   const scoreRow = el("div", { class: "wg-row" });
-  scoreRow.appendChild(el("div", { class: "wg-row-label" }, "SCORE"));
+  scoreRow.appendChild(el("div", { class: "wg-row-label" }, "FISH"));
   for (let d = 0; d < days; d++) {
     const s = dailyScores?.[d]?.score;
     const cls = s == null ? "" : s >= 70 ? "high" : s >= 45 ? "mid" : "low";
@@ -2441,6 +2588,10 @@ function renderDaily(daily, hourly, marine, spot, dailyScores) {
       ? `${fmtTime(sObj.peakStart.toISOString())} – ${fmtTime(sObj.peakEnd.toISOString())}`
       : "—";
 
+    // Enriched daily row — merges what used to be the "Best day" card by
+    // adding the "why" reasons inline. The Best-day card has been removed
+    // from Conditions; this row carries its information.
+    const reasonsText = sObj?.reasons?.length ? sObj.reasons.join(" · ") : "";
     const row = el("div", { class: "day" }, [
       el("div", { class: "name" }, [
         el("span", { class: "day-verdict", style: `background:${dotColor}` }),
@@ -2462,7 +2613,167 @@ function renderDaily(daily, hourly, marine, spot, dailyScores) {
         : el("div", { class: "extra" }, ["Wind ", fmtWind(windMax)])
     ]);
     wrap.appendChild(row);
+    if (reasonsText) {
+      wrap.appendChild(el("div", { class: "day-reasons" }, reasonsText));
+    }
   }
+}
+
+// Tide flow card — extracts tide range / slack / peak flow + fishing windows
+// from the old "Fishing intel" card so all tide-related info lives in one
+// place (right below the tide chart). Reuses computeFishingWindows.
+function renderTidesFlow(marine, hourly, daily, spot, solunar) {
+  const wrap = $("#tidesFlow");
+  const windowsWrap = $("#tidesFlowWindows");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (windowsWrap) windowsWrap.innerHTML = "";
+
+  let tideEventsAll = [];
+
+  // Tide range / spring–neap label
+  if (marine?.hourly?.sea_level_height_msl) {
+    const times = marine.hourly.time, hs = marine.hourly.sea_level_height_msl;
+    const today = new Date();
+    const dayKey = today.toDateString();
+    const todayH = [];
+    for (let i = 0; i < times.length; i++) {
+      if (new Date(times[i]).toDateString() === dayKey && hs[i] != null) todayH.push(hs[i]);
+    }
+    if (todayH.length) {
+      const hi = Math.max(...todayH), lo = Math.min(...todayH);
+      const range = hi - lo;
+      const pct = Math.max(0, Math.min(100, ((range - 1.5) / (3.4 - 1.5)) * 100));
+      const label = pct > 80 ? "Spring tide — strong flow"
+                  : pct > 60 ? "Approaching spring"
+                  : pct > 40 ? "Mid-range tide"
+                  : pct > 20 ? "Approaching neap"
+                  :            "Neap — light flow";
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Tide range today"),
+        el("div", { class: "value tide-state" }, range.toFixed(1) + " m"),
+        el("div", { class: "sub" }, label)
+      ]));
+    }
+    tideEventsAll = extractTideEvents(times, hs, false);
+    const now = Date.now();
+    const next = tideEventsAll.find((e) => new Date(e.time).getTime() > now);
+    const past = tideEventsAll.filter((e) => new Date(e.time).getTime() <= now);
+    const prev = past.length ? past[past.length - 1] : null;
+    if (next) {
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Next slack water"),
+        el("div", { class: "value" }, fmtTime(next.time)),
+        el("div", { class: "sub" }, next.type === "high"
+          ? `top of tide (${next.height.toFixed(1)} m)`
+          : `bottom of tide (${next.height.toFixed(1)} m)`)
+      ]));
+    }
+    if (prev && next) {
+      const midMs = (new Date(prev.time).getTime() + new Date(next.time).getTime()) / 2;
+      const flowType = (prev.type === "low" && next.type === "high")
+        ? "flooding (incoming)" : "ebbing (outgoing)";
+      const peakRange = Math.abs(next.height - prev.height);
+      const peakMps = (Math.PI * peakRange) / (6.21 * 3600);
+      const peakKt = peakMps * 1.94384;
+      wrap.appendChild(el("div", { class: "swell-item" }, [
+        el("div", { class: "label" }, "Peak flow"),
+        el("div", { class: "value" }, fmtTime(new Date(midMs).toISOString())),
+        el("div", { class: "sub" }, `~${peakKt.toFixed(1)} kt · ${flowType}`)
+      ]));
+    }
+  }
+
+  // Today's compound fishing windows (dawn × tide × solunar). Reuses the
+  // computeFishingWindows helper from the old renderFishing function.
+  if (windowsWrap) {
+    const todayWindows = computeFishingWindows(spot, daily, tideEventsAll, solunar);
+    if (todayWindows.length) {
+      for (const w of todayWindows) {
+        windowsWrap.appendChild(el("div", { class: "fwin" + (w.gold ? " gold" : "") }, [
+          el("div", {}, [w.gold ? "★ " : "• ", w.title]),
+          el("span", { class: "why" }, w.why)
+        ]));
+      }
+    } else {
+      windowsWrap.appendChild(el("div", { class: "fwin" }, [
+        "No standout windows today — fish the changes anyway."
+      ]));
+    }
+  }
+}
+
+// Dedicated Pressure card — sparkline + interpretation. Extracted from
+// renderFishing so pressure has a home of its own.
+function renderPressureCard(hourly) {
+  const wrap = $("#pressureCard");
+  const headline = $("#pressureHeadline");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+  if (!hourly?.pressure_msl) return;
+
+  const now = Date.now();
+  let nowIdx = 0;
+  for (let i = 0; i < hourly.time.length; i++) {
+    if (new Date(hourly.time[i]).getTime() >= now - 30 * 60 * 1000) { nowIdx = i; break; }
+  }
+  const past6Idx = Math.max(0, nowIdx - 6);
+  const next12Idx = Math.min(hourly.time.length - 1, nowIdx + 12);
+  const nowP = hourly.pressure_msl[nowIdx];
+  const pastP = hourly.pressure_msl[past6Idx];
+  const futureP = hourly.pressure_msl[next12Idx];
+  const past6Delta = (nowP != null && pastP != null) ? nowP - pastP : null;
+  const next12Delta = (futureP != null && nowP != null) ? futureP - nowP : null;
+
+  let arrow = "→", cls = "", note = "steady — settled conditions";
+  const t = next12Delta;
+  if (t != null) {
+    if (t > 4) { arrow = "↗↗"; cls = "up"; note = "rising fast — fish often active"; }
+    else if (t > 1) { arrow = "↗"; cls = "up"; note = "rising — classic good-bite signal"; }
+    else if (t < -4) { arrow = "↘↘"; cls = "fastdown"; note = "falling fast — front coming, bite often shuts after"; }
+    else if (t < -1) { arrow = "↘"; cls = "down"; note = "falling — feed window often 6–12h before front"; }
+  }
+  if (headline) headline.textContent = nowP != null ? `· ${Math.round(nowP)} hPa ${arrow}` : "";
+
+  // Sparkline over -6h to +18h relative to now
+  const sparkStart = Math.max(0, nowIdx - 6);
+  const sparkEnd = Math.min(hourly.time.length, nowIdx + 18);
+  const pts = [];
+  for (let i = sparkStart; i < sparkEnd; i++) {
+    if (hourly.pressure_msl[i] != null) pts.push(hourly.pressure_msl[i]);
+  }
+  let sparkHTML = "";
+  if (pts.length >= 4) {
+    const pMin = Math.min(...pts), pMax = Math.max(...pts);
+    const pad = Math.max(0.5, (pMax - pMin) * 0.15);
+    const yMin = pMin - pad, yMax = pMax + pad;
+    const W = 280, H = 56;
+    let d = "";
+    for (let i = 0; i < pts.length; i++) {
+      const x = (i / (pts.length - 1)) * W;
+      const y = H - ((pts[i] - yMin) / (yMax - yMin)) * H;
+      d += (i === 0 ? "M" : "L") + x.toFixed(1) + " " + y.toFixed(1) + " ";
+    }
+    const nowOff = Math.min(pts.length - 1, 6);
+    const cx = (nowOff / (pts.length - 1)) * W;
+    const cy = H - ((pts[nowOff] - yMin) / (yMax - yMin)) * H;
+    const strokeColor = cls === "up" ? "#6fdc8c" : cls === "down" ? "#ffc26b" : cls === "fastdown" ? "#ff7a7a" : "#7cc4e8";
+    sparkHTML = `<svg class="pressure-card-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+      <path d="${d}" fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round"/>
+      <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="3.5" fill="${strokeColor}"/>
+    </svg>`;
+  }
+
+  wrap.append(
+    el("div", { class: "pressure-now-row" }, [
+      el("div", { class: "pressure-value bar-trend " + cls }, nowP != null ? `${arrow} ${Math.round(nowP)} hPa` : "—"),
+      el("div", { class: "muted small" }, note)
+    ]),
+    el("div", { class: "spark-wrap", html: sparkHTML }),
+    el("div", { class: "muted small" },
+      (past6Delta != null ? `${past6Delta > 0 ? "+" : ""}${past6Delta.toFixed(1)} past 6h · ` : "") +
+      (next12Delta != null ? `${next12Delta > 0 ? "+" : ""}${next12Delta.toFixed(1)} next 12h` : ""))
+  );
 }
 
 function renderTides(marine) {

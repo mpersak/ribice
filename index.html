@@ -72,7 +72,8 @@
       <h2>This week <span class="muted small" id="weekHeadline"></span></h2>
       <div id="weekGrid" class="week-grid"></div>
       <p class="muted small" style="margin: 10px 0 0;">
-        Each bar shows wind / swell intensity through the day. Tap a day for the detail outlook on the Conditions tab.
+        <strong style="color: var(--accent);">BOAT</strong> = safe &amp; comfortable to be on the water (wind / swell / temp).
+        <strong style="color: var(--accent-2);">FISH</strong> = good day to actually catch something (adds tide flow, solunar, pressure trend). They can disagree — a calm day with neap tides + steady pressure is great boating but slow fishing.
       </p>
     </section>
 
@@ -93,30 +94,34 @@
       </details>
     </section>
 
-    <!-- Moved to Conditions tab (detailed daily breakdown) -->
+    <!-- Daily breakdown — merges Best-day + 7-day outlook into one card.
+         The row enrichment adds the "why" reasons inline (e.g. "light winds
+         · neap tides · falling pressure") so the user understands why a
+         given day scores what it does. -->
     <section class="card" data-tab="conditions">
-      <h2>Best day this week <span class="muted small" id="bestDayHeadline"></span></h2>
-      <div class="best-list" id="bestDayList"></div>
-    </section>
-
-    <section class="card" data-tab="conditions">
-      <h2>7-day outlook</h2>
+      <h2>Daily breakdown <span class="muted small" id="bestDayHeadline"></span></h2>
       <div class="daily" id="daily"></div>
     </section>
 
     <!-- ═══════════════ CONDITIONS tab ═══════════════ -->
+    <!-- Tides & flow — merges the old "Tides today" chart with the tide
+         bits of the old "Fishing intel" (range / slack / peak flow) and
+         today's compound fishing windows. All tide info in one place. -->
     <section class="card" data-tab="conditions">
-      <h2>Tides today</h2>
+      <h2>Tides &amp; flow</h2>
       <div class="tide-wrap">
         <svg id="tideChart" viewBox="0 0 320 120" preserveAspectRatio="none" aria-label="Tide chart"></svg>
         <div class="tide-events" id="tideEvents"></div>
       </div>
+      <div class="swell" id="tidesFlow" style="margin-top: 12px;"></div>
+      <div class="fishing-windows" id="tidesFlowWindows"></div>
     </section>
 
+    <!-- Pressure — extracted from the old Fishing intel into its own card
+         since pressure isn't a tide thing. Big sparkline + interpretation. -->
     <section class="card" data-tab="conditions">
-      <h2>Fishing intel <span class="muted small" id="fishingHeadline"></span></h2>
-      <div class="swell" id="fishingIntel"></div>
-      <div class="fishing-windows" id="fishingWindows"></div>
+      <h2>Pressure <span class="muted small" id="pressureHeadline"></span></h2>
+      <div id="pressureCard"></div>
     </section>
 
     <section class="card" data-tab="conditions">
@@ -150,7 +155,9 @@
       <div id="agreement"></div>
     </section>
 
-    <section class="card" data-tab="conditions">
+    <!-- Cross-check links — moved to Spots tab since they're per-spot
+         utility links, not "conditions" data. -->
+    <section class="card" data-tab="spots">
       <h2>Cross-check this spot</h2>
       <p class="muted small">No public API for these — tap to open their forecast for the active spot.</p>
       <div class="xlinks" id="xlinks"></div>

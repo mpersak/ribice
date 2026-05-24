@@ -153,8 +153,39 @@ main { padding: 0 16px 32px; display: flex; flex-direction: column; gap: 14px; m
 .verdict-text strong { font-size: 16px; }
 .verdict-text span { color: var(--ink-soft); font-size: 13px; }
 
-/* Verdict score chip — 0-100 number anchored to the right of the verdict. */
+/* Dual score gauges in the hero — Boating + Fishing side by side. */
 .verdict { position: relative; }
+.verdict-gauges {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.dual-gauge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 56px;
+}
+.dual-gauge-svg {
+  width: 56px;
+  height: 56px;
+  display: block;
+}
+.dual-gauge-label {
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-top: 2px;
+  font-weight: 700;
+}
+.dual-gauge.high .dual-gauge-label { color: var(--green); }
+.dual-gauge.mid  .dual-gauge-label { color: var(--accent-2); }
+.dual-gauge.low  .dual-gauge-label { color: var(--red); }
+
+/* Legacy single-chip styles — kept so an in-flight cached old SW still
+   renders sensibly until it replaces itself. */
 .verdict-score {
   margin-left: auto;
   display: flex;
@@ -171,12 +202,6 @@ main { padding: 0 16px 32px; display: flex; flex-direction: column; gap: 14px; m
 }
 .verdict-score .n { font-size: 24px; font-weight: 700; }
 .verdict-score .of { font-size: 9px; color: var(--muted); letter-spacing: 1px; margin-top: 3px; text-transform: uppercase; }
-.verdict-score.high { border-color: rgba(111,220,140,0.45); }
-.verdict-score.high .n { color: var(--green); }
-.verdict-score.mid  { border-color: rgba(255,212,122,0.45); }
-.verdict-score.mid  .n { color: var(--accent-2); }
-.verdict-score.low  { border-color: rgba(255,122,122,0.45); }
-.verdict-score.low  .n { color: var(--red); }
 
 /* Quick-status pills row (tide / UV / moon) under verdict */
 .quick-pills {
@@ -1711,3 +1736,56 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(
    keep this so any stale cached SW that serves the old HTML still looks
    right while it updates). */
 .verdict-light { display: none; }
+
+/* Week grid — TIDE row (mini bar showing day's range as fraction of spring max) */
+.wg-tide svg { width: 100%; height: 18px; display: block; }
+.wg-tide { padding: 0 2px; }
+
+/* Week grid — PRESSURE row (arrow + delta per day) */
+.wg-pres {
+  flex-direction: column;
+  gap: 0;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.wg-pres-arrow { font-size: 14px; font-weight: 700; }
+.wg-pres-delta { font-size: 9px; color: var(--muted); margin-top: 1px; }
+.wg-pres.up   .wg-pres-arrow { color: var(--green); }
+.wg-pres.down .wg-pres-arrow { color: var(--amber); }
+.wg-pres.steady .wg-pres-arrow { color: var(--muted); }
+
+/* Daily breakdown — reasons sub-row under each day */
+.day-reasons {
+  font-size: 11px;
+  color: var(--ink-soft);
+  padding: 0 12px 8px 26px;
+  font-style: italic;
+  letter-spacing: 0.2px;
+  margin-top: -2px;
+}
+
+/* Pressure card (Conditions tab) — bigger sparkline + clear interpretation */
+#pressureCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pressure-now-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.pressure-value {
+  font-size: 28px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
+}
+.pressure-card-spark {
+  width: 100%;
+  height: 56px;
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(124, 196, 232, 0.3));
+}
