@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-15";
+const APP_VERSION = "2026.05.22-16";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -771,11 +771,50 @@ function useGPS() {
       saveJSON("spots", state.spots);
       state.activeSpotId = "__gps__";
       saveJSON("activeSpotId", "__gps__");
+      state._gpsRefreshedThisSession = true;
       refresh();
     },
     (err) => toast("Couldn't get GPS: " + err.message),
     { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
   );
+}
+
+// Silently update __gps__ coords on every fresh refresh() — but only if
+// the user is currently looking at their GPS spot, and only once per
+// session so we don't hammer geolocation on every spot switch. Fails
+// silently if permission denied or geolocation unavailable — we just
+// keep whatever last-known coords we had.
+async function maybeRefreshGPS() {
+  if (state.activeSpotId !== "__gps__") return;
+  if (state._gpsRefreshedThisSession) return;
+  if (!navigator.geolocation) return;
+  state._gpsRefreshedThisSession = true;
+  try {
+    const pos = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, {
+        enableHighAccuracy: false,
+        timeout: 4000,
+        maximumAge: 5 * 60 * 1000  // accept up to 5 min stale to avoid waiting
+      });
+    });
+    const lat = +pos.coords.latitude.toFixed(4);
+    const lon = +pos.coords.longitude.toFixed(4);
+    const existing = state.spots.find((s) => s.id === "__gps__");
+    if (!existing) {
+      state.spots.unshift({ id: "__gps__", name: "My location", lat, lon });
+      saveJSON("spots", state.spots);
+      return;
+    }
+    // Only persist if we've actually moved (>1km from last known)
+    const drift = Math.hypot(existing.lat - lat, existing.lon - lon);
+    if (drift > 0.01) {
+      existing.lat = lat;
+      existing.lon = lon;
+      saveJSON("spots", state.spots);
+    }
+  } catch {
+    // Permission denied / timeout / no signal — keep last-known coords.
+  }
 }
 
 function renderAll() {
@@ -2304,15 +2343,24 @@ function buildGauge(label, score) {
   return wrap;
 }
 
-// "↑ Rising 1.8m" / "↓ Falling 0.3m" based on next tide event.
+// Live tide indicator — shows direction AND how far through the current
+// cycle we are. Previously just "↑ Rising · 01:00 am"; now "↑ 65% to high
+// at 01:00 am" so the user sees the live cycle progress at a glance.
 function nextTidePillText(marine) {
   if (!marine?.hourly?.sea_level_height_msl) return null;
   const events = extractTideEvents(marine.hourly.time, marine.hourly.sea_level_height_msl, false);
   const now = Date.now();
   const next = events.find((e) => new Date(e.time).getTime() > now);
+  const prev = events.filter((e) => new Date(e.time).getTime() <= now).pop();
   if (!next) return null;
   const arrow = next.type === "high" ? "↑" : "↓";
   const word = next.type === "high" ? "Rising" : "Falling";
+  if (prev) {
+    const total = new Date(next.time).getTime() - new Date(prev.time).getTime();
+    const elapsed = now - new Date(prev.time).getTime();
+    const pct = Math.round((elapsed / total) * 100);
+    return `${arrow} ${word} ${pct}% · ${fmtTime(next.time)}`;
+  }
   return `${arrow} ${word} · ${fmtTime(next.time)}`;
 }
 
@@ -2348,12 +2396,22 @@ function renderHourly(h, marine) {
     agreeSum += range; agreeN++;
     const score = hourScore(cur, mCur);
     const scoreCls = score >= 70 ? "high" : score >= 45 ? "mid" : "low";
+    // Hourly precip — show a tiny blue bar when there's rain in this hour.
+    // Cap visual height at 5mm so a wet hour stands out without dominating.
+    const precip = cur.precipitation || 0;
+    const precipPct = Math.min(100, (precip / 5) * 100);
     const hour = el("div", { class: "hour " + (v === "green" ? "good" : v === "amber" ? "warn" : "bad") }, [
       el("div", { class: "t" }, fmtHour(h.time[i])),
       el("div", { class: "icon" }, icon),
       el("div", { class: "temp" }, fmtTemp(cur.temperature_2m)),
       el("div", { class: "wind" }, fmtWind(cur.wind_speed_10m) + " " + compass(cur.wind_direction_10m)),
       el("div", { class: "wave" }, mCur?.wave_height != null ? fmtWave(mCur.wave_height) : "—"),
+      precip > 0.05
+        ? el("div", { class: "hour-precip", title: precip.toFixed(1) + " mm" }, [
+            el("div", { class: "fill", style: `width:${precipPct.toFixed(0)}%` }),
+            el("span", { class: "precip-label" }, precip < 1 ? precip.toFixed(1) + "mm" : Math.round(precip) + "mm")
+          ])
+        : el("div", { class: "hour-precip empty" }),
       el("div", { class: "hour-bar " + scoreCls }, [
         el("div", { class: "fill", style: `width:${Math.max(4, score)}%` })
       ]),
@@ -3081,6 +3139,12 @@ function renderAgreement(h) {
 // ---------- Refresh ----------
 
 async function refresh() {
+  // If the user's active spot is the GPS one, silently refresh their
+  // coordinates once per session before we fetch. Doesn't prompt for
+  // permission if it was previously granted; falls back to last-known
+  // coords if denied / unavailable. Doesn't touch any saved spot.
+  await maybeRefreshGPS();
+
   renderSpotPicker();
   const spot = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
   if (!spot) return;

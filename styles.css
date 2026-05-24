@@ -278,6 +278,31 @@ main { padding: 0 16px 32px; display: flex; flex-direction: column; gap: 14px; m
 .hour .hour-score.high { color: var(--green); }
 .hour .hour-score.mid  { color: var(--accent-2); }
 .hour .hour-score.low  { color: var(--muted); }
+.hour .hour-precip {
+  position: relative;
+  margin-top: 4px;
+  height: 12px;
+  background: rgba(124, 196, 232, 0.06);
+  border-radius: 3px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hour .hour-precip.empty { background: transparent; }
+.hour .hour-precip .fill {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(124,196,232,0.35), rgba(124,196,232,0.55));
+  border-radius: 3px;
+}
+.hour .hour-precip .precip-label {
+  position: relative;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: 0.2px;
+}
 
 /* Daily */
 .daily { display: flex; flex-direction: column; gap: 6px; }
