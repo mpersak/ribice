@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-7";
+const APP_VERSION = "2026.05.22-8";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -800,14 +800,17 @@ function renderForTab(tabId) {
   const dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
 
   if (tabId === "today") {
+    // Slim Today: hero (single rating), warnings strip, bait, week-glance
+    // grid, 48-hour scroll. Bite times moved to Forecast, best-day + 7-day
+    // detail moved to Conditions.
     renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
     renderWarnings(hourlyAgg, marine);
     renderBaitCard(hourlyAgg, marine);
-    renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
-    renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+    renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores);
     renderHourly(hourlyAgg, marine);
-    renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
   } else if (tabId === "conditions") {
+    renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
+    renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
     renderTides(marine);
     renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar);
     renderSeaTemp(marine);
@@ -817,6 +820,7 @@ function renderForTab(tabId) {
     renderSolunar(spot, dailyAgg, air, solunar);
     renderAgreement(hourlyAgg);
   } else if (tabId === "forecast") {
+    renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
     renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
   }
 }
@@ -1432,14 +1436,16 @@ function renderWarnings(hourly, marine) {
     when: `Sig. wave height ${pkWave.toFixed(1)} m around ${fmtTime(pkWaveT)}`
   });
 
-  // Card colouring + headline
-  card.classList.remove("clear", "amber", "red");
+  // Card colouring + headline. When everything is clear we collapse the card
+  // to a thin one-liner (the slim variant) so it doesn't dominate the top
+  // of Today. When there's anything to flag, we render the full card.
+  card.classList.remove("clear", "amber", "red", "slim");
   if (!warnings.length) {
-    card.classList.add("clear");
-    headline.textContent = "· all clear";
+    card.classList.add("clear", "slim");
+    headline.textContent = "";
     body.appendChild(el("div", { class: "allclear" }, [
       el("span", { class: "pip" }),
-      "No warning-level conditions forecast in the next 48 hours."
+      "All clear in the next 48 h"
     ]));
     return;
   }
@@ -2077,33 +2083,41 @@ function renderHero(h, marine, daily, dailyScores) {
   const mIdx = marine ? indexAtTime(marine.hourly.time, h.time[idx]) : -1;
   const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
 
-  const verdict = hourVerdict(cur, mCur);
   const sunrise = daily.sunrise?.[0];
   const sunset = daily.sunset?.[0];
   const best = bestWindowToday(h, marine?.hourly, sunrise, sunset);
 
-  const light = $("#verdict .verdict-light");
-  light.dataset.state = verdict;
+  // Headline derived from today's overall score so the text and the gauge
+  // always agree. Previously there were two ratings (verdict light from
+  // threshold breaches + the score gauge) that routinely disagreed —
+  // confusing UX. One source of truth.
+  const todayScore = dailyScores && dailyScores[0] ? dailyScores[0].score : null;
+  const band = todayScore == null ? "amber"
+             : todayScore >= 70 ? "green"
+             : todayScore >= 45 ? "amber"
+             : "red";
   const headlines = {
     green: "Looking good out there",
     amber: "Workable, with care",
-    red: "Best to stay in today"
+    red:   "Best to stay in today"
   };
-  $("#verdictHeadline").textContent = headlines[verdict];
+  $("#verdictHeadline").textContent = headlines[band];
 
   let detail = "";
   if (best) {
     detail = `Best window today: ${fmtTime(best.start)} – ${fmtTime(best.end)}`;
-  } else if (verdict === "green") {
-    detail = "All thresholds clear right now.";
+  } else if (band === "green") {
+    detail = "Settled conditions across the day.";
   } else {
+    // List the metrics that are over the user's threshold so the user knows
+    // *why* it's marginal/poor, not just that it is.
     const breaches = [];
     const t = state.thresholds;
     if ((cur.wind_speed_10m || 0) * KMH_TO_KT > t.maxWindKt) breaches.push("wind");
     if ((cur.wind_gusts_10m || 0) * KMH_TO_KT > t.maxGustKt) breaches.push("gusts");
     if ((mCur?.wave_height || 0) > t.maxWaveM) breaches.push("waves");
     if ((cur.precipitation || 0) > t.maxRainMm) breaches.push("rain");
-    detail = breaches.length ? `Over your limit: ${breaches.join(", ")}.` : "Mixed conditions.";
+    detail = breaches.length ? `Over your limit: ${breaches.join(", ")}.` : "Mixed conditions through the day.";
   }
   $("#verdictDetail").textContent = detail;
 
@@ -2241,6 +2255,117 @@ function renderHourly(h, marine) {
   }
   const avg = agreeN ? (agreeSum / agreeN) : 0;
   $("#hourlyAgreement").textContent = avg < 1.5 ? "· models agree" : avg < 3 ? "· some divergence" : "· models disagree";
+}
+
+// 7-day at-a-glance grid: wind sparkline, swell sparkline, temp hi/lo, score
+// badge per day. Replaces the old 7-day card on Today — answers the user's
+// "I just need to know wind / swell / temp for the week" question in one
+// glance instead of forcing them to scroll through detail cards.
+function renderWeekGrid(daily, hourly, marine, dailyScores) {
+  const wrap = $("#weekGrid");
+  const headline = $("#weekHeadline");
+  if (!wrap) return;
+  wrap.innerHTML = "";
+
+  const days = Math.min(7, daily.time.length);
+
+  // Normalisation maxima — floored so calm weeks don't make every bar look big.
+  const winds = (hourly.wind_speed_10m || []).filter((x) => x != null).map((v) => v * KMH_TO_KT);
+  const swells = marine?.hourly?.wave_height?.filter?.((x) => x != null) || [];
+  const wMax = Math.max(20, winds.length ? Math.max(...winds) : 20);
+  const sMax = Math.max(1.5, swells.length ? Math.max(...swells) : 1.5);
+
+  const topScore = Math.max(0, ...(dailyScores || []).map((s) => s?.score || 0));
+  if (headline) {
+    headline.textContent = topScore ? `· top day ${topScore}/100` : "";
+  }
+
+  // Header row (day names)
+  const header = el("div", { class: "wg-header" });
+  header.appendChild(el("div", { class: "wg-row-label" }, ""));
+  for (let d = 0; d < days; d++) {
+    const name = fmtDayName(daily.time[d]).replace("Today", "Now").replace("Tomorrow", "Tom");
+    header.appendChild(el("div", { class: "wg-day-name" }, name.slice(0, 5)));
+  }
+  wrap.appendChild(header);
+
+  // WIND row
+  const windRow = el("div", { class: "wg-row" });
+  windRow.appendChild(el("div", { class: "wg-row-label" }, "WIND"));
+  for (let d = 0; d < days; d++) {
+    windRow.appendChild(weekBarCell(hourly, daily.time[d], "wind_speed_10m", wMax, "wind", (v) => v * KMH_TO_KT));
+  }
+  wrap.appendChild(windRow);
+
+  // SWELL row
+  const swellRow = el("div", { class: "wg-row" });
+  swellRow.appendChild(el("div", { class: "wg-row-label" }, "SWELL"));
+  for (let d = 0; d < days; d++) {
+    if (marine?.hourly?.wave_height) {
+      swellRow.appendChild(weekBarCell(marine.hourly, daily.time[d], "wave_height", sMax, "swell", (v) => v));
+    } else {
+      swellRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
+    }
+  }
+  wrap.appendChild(swellRow);
+
+  // TEMP row
+  const tempRow = el("div", { class: "wg-row" });
+  tempRow.appendChild(el("div", { class: "wg-row-label" }, "TEMP"));
+  for (let d = 0; d < days; d++) {
+    const hi = daily.temperature_2m_max?.[d];
+    const lo = daily.temperature_2m_min?.[d];
+    tempRow.appendChild(el("div", { class: "wg-day wg-temp" }, [
+      el("span", { class: "hi" }, hi != null ? Math.round(hi) + "°" : "—"),
+      el("span", { class: "lo" }, lo != null ? Math.round(lo) + "°" : "—")
+    ]));
+  }
+  wrap.appendChild(tempRow);
+
+  // SCORE row
+  const scoreRow = el("div", { class: "wg-row" });
+  scoreRow.appendChild(el("div", { class: "wg-row-label" }, "SCORE"));
+  for (let d = 0; d < days; d++) {
+    const s = dailyScores?.[d]?.score;
+    const cls = s == null ? "" : s >= 70 ? "high" : s >= 45 ? "mid" : "low";
+    const isTop = s != null && s === topScore && topScore > 50;
+    scoreRow.appendChild(el("div", { class: "wg-day" + (isTop ? " wg-top" : "") }, [
+      el("span", { class: "wg-score-badge " + cls }, s != null ? String(s) : "—")
+    ]));
+  }
+  wrap.appendChild(scoreRow);
+}
+
+// Build one day's bar sparkline cell — 6 bars covering 4-hour chunks (00-03,
+// 04-07, 08-11, 12-15, 16-19, 20-23). Each bar height = max value in its
+// bucket relative to the week's max. Colours: green / amber / red by absolute
+// thresholds so a calm day looks visibly different from a rough day.
+function weekBarCell(hourlyData, dayKey, field, maxVal, kind, convert) {
+  const times = hourlyData.time;
+  const vals = hourlyData[field];
+  const buckets = [[], [], [], [], [], []];
+  for (let i = 0; i < times.length; i++) {
+    if (!times[i].startsWith(dayKey)) continue;
+    if (vals[i] == null) continue;
+    const hr = new Date(times[i]).getHours();
+    const b = Math.floor(hr / 4);
+    if (b >= 0 && b < 6) buckets[b].push(convert(vals[i]));
+  }
+  const W = 42, H = 24;
+  const barW = (W / 6) - 1;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="wg-bars" preserveAspectRatio="none" aria-hidden="true">`;
+  for (let b = 0; b < 6; b++) {
+    if (!buckets[b].length) continue;
+    const v = Math.max(...buckets[b]);
+    const h = Math.max(2, Math.min(H, (v / maxVal) * H));
+    const x = b * (W / 6);
+    const color = kind === "wind"
+      ? (v < 12 ? "#6fdc8c" : v < 22 ? "#ffd47a" : "#ff7a7a")
+      : (v < 0.8 ? "#6fdc8c" : v < 1.5 ? "#ffd47a" : "#ff7a7a");
+    svg += `<rect x="${x.toFixed(1)}" y="${(H - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="1"/>`;
+  }
+  svg += `</svg>`;
+  return el("div", { class: "wg-day wg-bars-day", html: svg });
 }
 
 function renderDaily(daily, hourly, marine, spot, dailyScores) {

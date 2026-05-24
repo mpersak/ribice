@@ -44,7 +44,6 @@
         <span id="spotMeta" class="meta"></span>
       </div>
       <div class="verdict" id="verdict">
-        <div class="verdict-light" data-state="grey"></div>
         <div class="verdict-text">
           <strong id="verdictHeadline">Reading the sky…</strong>
           <span id="verdictDetail">Pulling 5 weather models, marine + tide data.</span>
@@ -69,7 +68,21 @@
       </p>
     </section>
 
-    <section class="card bite-card" data-tab="today">
+    <section class="card week-card" data-tab="today">
+      <h2>This week <span class="muted small" id="weekHeadline"></span></h2>
+      <div id="weekGrid" class="week-grid"></div>
+      <p class="muted small" style="margin: 10px 0 0;">
+        Each bar shows wind / swell intensity through the day. Tap a day for the detail outlook on the Conditions tab.
+      </p>
+    </section>
+
+    <section class="card" data-tab="today">
+      <h2>Next 48 hours <span class="muted" id="hourlyAgreement"></span></h2>
+      <div class="hourly-scroll" id="hourly"></div>
+    </section>
+
+    <!-- Moved to Forecast tab (with the species panel) -->
+    <section class="card bite-card" data-tab="forecast">
       <h2>Bite times today <span class="muted small" id="biteHeadline"></span></h2>
       <div class="bite-grid" id="biteToday"></div>
       <details class="bite-note">
@@ -80,17 +93,13 @@
       </details>
     </section>
 
-    <section class="card" data-tab="today">
+    <!-- Moved to Conditions tab (detailed daily breakdown) -->
+    <section class="card" data-tab="conditions">
       <h2>Best day this week <span class="muted small" id="bestDayHeadline"></span></h2>
       <div class="best-list" id="bestDayList"></div>
     </section>
 
-    <section class="card" data-tab="today">
-      <h2>Next 48 hours <span class="muted" id="hourlyAgreement"></span></h2>
-      <div class="hourly-scroll" id="hourly"></div>
-    </section>
-
-    <section class="card" data-tab="today">
+    <section class="card" data-tab="conditions">
       <h2>7-day outlook</h2>
       <div class="daily" id="daily"></div>
     </section>

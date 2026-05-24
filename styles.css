@@ -1628,3 +1628,86 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(
   cursor: pointer;
 }
 .spots-tab-actions { display: flex; gap: 8px; }
+
+/* ═══════════════ Week-glance grid ═══════════════ */
+.week-card { padding: 14px 12px; }
+.week-grid {
+  display: grid;
+  /* label column + 7 day columns */
+  grid-template-columns: 44px repeat(7, 1fr);
+  row-gap: 8px;
+  column-gap: 4px;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.wg-header { display: contents; }
+.wg-row { display: contents; }
+.wg-row-label {
+  font-size: 9px;
+  letter-spacing: 1.1px;
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: 700;
+  text-align: right;
+  padding-right: 6px;
+}
+.wg-day-name {
+  text-align: center;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+}
+.wg-day {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 24px;
+}
+.wg-bars-day { padding: 0 2px; }
+.wg-bars {
+  display: block;
+  width: 100%;
+  height: 24px;
+}
+.wg-empty { color: var(--muted); font-size: 11px; }
+.wg-temp { gap: 4px; font-size: 11px; }
+.wg-temp .hi { color: var(--accent-2); font-weight: 600; }
+.wg-temp .lo { color: var(--accent); font-weight: 500; opacity: 0.85; }
+.wg-score-badge {
+  display: inline-block;
+  min-width: 30px;
+  text-align: center;
+  padding: 3px 6px;
+  border-radius: 8px;
+  font-weight: 700;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.wg-score-badge.high { color: var(--green); background: rgba(111,220,140,0.13); }
+.wg-score-badge.mid  { color: var(--accent-2); background: rgba(255,212,122,0.13); }
+.wg-score-badge.low  { color: var(--muted); background: rgba(255,255,255,0.04); }
+.wg-top .wg-score-badge {
+  box-shadow: 0 0 0 1.5px var(--accent-2), 0 0 8px rgba(255,212,122,0.4);
+}
+
+/* ═══════════════ Slim warnings strip (when clear) ═══════════════ */
+#warningsCard.slim {
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+#warningsCard.slim h2 { display: none; }
+#warningsCard.slim p { display: none; }
+#warningsCard.slim .allclear {
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+/* Hero: kill the old verdict-light dot slot (we removed it from HTML, but
+   keep this so any stale cached SW that serves the old HTML still looks
+   right while it updates). */
+.verdict-light { display: none; }
