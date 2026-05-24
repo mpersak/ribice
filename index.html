@@ -246,9 +246,13 @@
       <span>Conditions</span>
     </button>
     <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
-      <svg viewBox="0 0 26 22" width="26" height="22" fill="none" aria-hidden="true">
-        <path d="M2 11 Q 7 5,18 6 Q 22 7,24 11 Q 22 15,18 16 Q 7 17,2 11 L 0 7 L 3 11 L 0 15 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
-        <circle cx="19" cy="10" r="0.9" fill="currentColor"/>
+      <svg viewBox="0 0 22 22" width="22" height="22" fill="none" aria-hidden="true">
+        <!-- Tail -->
+        <path d="M3 7 L 7 11 L 3 15 Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>
+        <!-- Body -->
+        <ellipse cx="13" cy="11" rx="7" ry="4.5" stroke="currentColor" stroke-width="1.6"/>
+        <!-- Eye -->
+        <circle cx="17" cy="10" r="0.9" fill="currentColor"/>
       </svg>
       <span>Forecast</span>
     </button>

@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-13";
+const APP_VERSION = "2026.05.22-14";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2606,10 +2606,11 @@ function renderDaily(daily, hourly, marine, spot, dailyScores) {
       : "—";
 
     // Enriched daily row — merges what used to be the "Best day" card by
-    // adding the "why" reasons inline. The Best-day card has been removed
-    // from Conditions; this row carries its information.
+    // adding the "why" reasons inline. Score badge intentionally removed
+    // from Conditions: the week grid on Today already has it, no need to
+    // repeat. This card focuses on the per-day CONDITIONS, not the rating.
     const reasonsText = sObj?.reasons?.length ? sObj.reasons.join(" · ") : "";
-    const row = el("div", { class: "day" }, [
+    const row = el("div", { class: "day no-score" }, [
       el("div", { class: "name" }, [
         el("span", { class: "day-verdict", style: `background:${dotColor}` }),
         fmtDayName(daily.time[i])
@@ -2625,9 +2626,7 @@ function renderDaily(daily, hourly, marine, spot, dailyScores) {
         " ",
         el("span", { class: "peak-time" }, peakText)
       ]),
-      score != null
-        ? el("div", { class: "day-score " + scoreCls }, String(score))
-        : el("div", { class: "extra" }, ["Wind ", fmtWind(windMax)])
+      el("div", { class: "extra" }, ["Wind ", fmtWind(windMax)])
     ]);
     wrap.appendChild(row);
     if (reasonsText) {
