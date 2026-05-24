@@ -244,14 +244,18 @@
       <span>Conditions</span>
     </button>
     <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
-      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" class="nav-fish-svg">
-        <!-- Solid fish silhouette. Filled (not stroked) so the shape reads
-             cleanly at 22 px where outlines blur together. V-notched tail
-             on the left, body bulging right, cut-out eye on the head. -->
-        <path d="M 22 12 Q 22 7, 17 5 Q 11 4, 6 7 L 2 4 L 4 12 L 2 20 L 6 17 Q 11 20, 17 19 Q 22 17, 22 12 Z"
-              fill="currentColor"/>
-        <!-- Eye — matches nav background to read as a cutout -->
-        <circle cx="18" cy="10" r="1.1" fill="#0b1a2b"/>
+      <svg viewBox="0 0 24 22" width="22" height="22" aria-hidden="true" class="nav-fish-svg">
+        <!-- Bold fish silhouette as two overlapping solid shapes —
+             previous all-in-one path read as a pill at 22 px because the
+             tail was only 4 px wide vs a 16 px body. This version gives
+             the tail nearly half the canvas so it visibly forks left. -->
+        <!-- Tail: chunky left-pointing triangle, 9 px wide -->
+        <path d="M 2 3 L 11 11 L 2 19 Z" fill="currentColor"/>
+        <!-- Body: ellipse on the right, overlaps tail at x=8-11 so they
+             fuse into one continuous fish shape -->
+        <ellipse cx="15" cy="11" rx="7" ry="5" fill="currentColor"/>
+        <!-- Cut-out eye on the head, matches nav bg colour -->
+        <circle cx="18" cy="9" r="1.1" fill="#0b1a2b"/>
       </svg>
       <span>Forecast</span>
     </button>
