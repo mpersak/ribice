@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-14";
+const APP_VERSION = "2026.05.22-15";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -820,11 +820,9 @@ function renderForTab(tabId) {
       safeRender("WeekGrid", () => renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores, boatingScores));
       safeRender("Hourly",   () => renderHourly(hourlyAgg, marine));
     } else if (tabId === "conditions") {
-      // Conditions merged from 10 cards to 7: Daily breakdown (best-day +
-      // 7-day merged), Tides & flow (tide chart + tide bits from fishing
-      // intel), Pressure (extracted), Wind, Swell, Sea temp, Solunar, Model
-      // agreement. Cross-check moved to Spots tab.
-      safeRender("Daily",     () => renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores));
+      // Conditions: detailed "now" data only (no week-level cards). The week
+      // view lives entirely on the Today tab. Cards: Tides & flow, Pressure,
+      // Sea temp, Wind, Swell, Solunar, Model agreement.
       safeRender("Tides",     () => renderTides(marine));
       safeRender("TidesFlow", () => renderTidesFlow(marine, hourlyAgg, dailyAgg, spot, solunar));
       safeRender("Pressure",  () => renderPressureCard(hourlyAgg));
@@ -2431,6 +2429,19 @@ function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
     ]));
   }
   wrap.appendChild(tempRow);
+
+  // WX row — weather icon per day (cloud / sun / rain etc). Sourced from
+  // the daily weather_code which is the modal value across the 5 models.
+  // This was the one thing the Daily breakdown card had that the grid
+  // didn't — bringing it here so we can drop the redundant card.
+  const wxRow = el("div", { class: "wg-row" });
+  wxRow.appendChild(el("div", { class: "wg-row-label" }, "WX"));
+  for (let d = 0; d < days; d++) {
+    const code = daily.weather_code?.[d] != null ? Math.round(daily.weather_code[d]) : null;
+    const [icon, label] = code != null ? wmo(code) : ["—", ""];
+    wxRow.appendChild(el("div", { class: "wg-day wg-wx", title: label }, icon));
+  }
+  wrap.appendChild(wxRow);
 
   // TIDE row — mini bar showing each day's tidal range as a fraction of the
   // Auckland spring max (~3.4m). Lets the user see "neap tides" at a glance.

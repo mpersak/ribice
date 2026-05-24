@@ -94,14 +94,12 @@
       </details>
     </section>
 
-    <!-- Daily breakdown — merges Best-day + 7-day outlook into one card.
-         The row enrichment adds the "why" reasons inline (e.g. "light winds
-         · neap tides · falling pressure") so the user understands why a
-         given day scores what it does. -->
-    <section class="card" data-tab="conditions">
-      <h2>Daily breakdown <span class="muted small" id="bestDayHeadline"></span></h2>
-      <div class="daily" id="daily"></div>
-    </section>
+    <!-- Daily breakdown was removed in v15 — its only unique signal was
+         the weather icon per day, which has moved into the Today week grid
+         as the WX row. Per-day reasons text is dropped (the week grid's
+         BOAT/FISH scores + sparklines already tell the story). -->
+    <span id="bestDayHeadline" hidden></span>
+    <div class="daily" id="daily" hidden></div>
 
     <!-- ═══════════════ CONDITIONS tab ═══════════════ -->
     <!-- Tides & flow — merges the old "Tides today" chart with the tide
