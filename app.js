@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-18";
+const APP_VERSION = "2026.05.22-19";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -700,6 +700,29 @@ function boatingHourCheck(h, marineHour) {
   return breaches === 0 ? "green" : breaches <= 1 ? "amber" : "red";
 }
 
+// Continuous 0-100 boating score for a single hour. Smooth — at zero
+// conditions you get 100, at threshold ~50, at 2x threshold ~0. Lets a
+// flat-calm day genuinely outscore a threshold-hugging day even though
+// both technically "pass". No temp factor — dress for the weather.
+function boatingHourScore(h, marineHour) {
+  const t = state.thresholds;
+  const windKt = (h.wind_speed_10m || 0) * KMH_TO_KT;
+  const gustKt = (h.wind_gusts_10m || 0) * KMH_TO_KT;
+  const wave   = marineHour?.wave_height ?? 0;
+  const rain   = h.precipitation || 0;
+  // Fraction-of-budget per metric, clamped [0, 2].
+  const w = Math.min(2, windKt / Math.max(1, t.maxWindKt));
+  const g = Math.min(2, gustKt / Math.max(1, t.maxGustKt));
+  const v = Math.min(2, wave   / Math.max(0.1, t.maxWaveM));
+  const r = Math.min(2, rain   / Math.max(0.1, t.maxRainMm));
+  // Weights sum to 50 at threshold, 100 at double-threshold so:
+  //   calm conditions → 100, at-threshold → 50, well over → 0.
+  // Wind + swell get the biggest weights since they're the actual safety
+  // signals; gust and rain are secondary.
+  const penalty = w * 15 + g * 11 + v * 15 + r * 9;
+  return Math.max(0, Math.min(100, Math.round(100 - penalty)));
+}
+
 // 0-100 "fishability" for a single hour. Smooth — each metric contributes
 // proportionally to its distance from threshold so the bar tells you "how
 // nice" rather than just pass/fail. Used by the hour cards.
@@ -950,17 +973,18 @@ function computeBoatingScores(daily, hourly, marine) {
       const hh = new Date(hourly.time[i]).getHours();
       if (hh >= 6 && hh <= 20) dayIdxs.push(i);
     }
-    let greenHrs = 0;
+    // Mean of the continuous per-hour score across daylight hours. Gives
+    // a true gradient instead of the binary "all hours pass = 100, any
+    // hour fails = penalty" we had before. So a 0.3m swell day naturally
+    // outscores a 1.0m swell day even though both are under the limit.
+    let total = 0;
     for (const i of dayIdxs) {
       const cur = sliceHour(hourly, i);
       const mIdx = marine ? indexAtTime(marine.hourly.time, hourly.time[i]) : -1;
       const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
-      // Boating-specific check — ignores air temperature (a cold morning
-      // is a jacket problem, not a safety problem). Calm-but-cold days
-      // now correctly score 100 like calm-and-warm days do.
-      if (boatingHourCheck(cur, mCur) === "green") greenHrs++;
+      total += boatingHourScore(cur, mCur);
     }
-    const score = dayIdxs.length ? Math.round((greenHrs / dayIdxs.length) * 100) : 50;
+    const score = dayIdxs.length ? Math.round(total / dayIdxs.length) : 50;
     out.push({ date: dayKey, score });
   }
   return out;
