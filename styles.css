@@ -1050,24 +1050,12 @@ body[data-tab="spots"] #spotPicker { display: none; }
   color: var(--accent);
   background: rgba(124, 196, 232, 0.08);
 }
-/* Fish emoji as the Forecast icon. SVG fish paths at 22px were rendering
-   as ambiguous pill shapes — the emoji is universally recognisable on
-   iOS/Android (renders as the platform's native fish glyph). Explicit
-   emoji font stack so the system colour-emoji font wins over UI fonts
-   that lack the glyph. */
-.nav-fish-emoji {
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", sans-serif;
-  font-size: 20px;
-  line-height: 22px;
-  display: inline-block;
-  height: 22px;
-  width: 22px;
-  text-align: center;
-  filter: grayscale(35%) opacity(0.65);
-  transition: filter 0.18s;
-}
-.nav-tab.active .nav-fish-emoji {
-  filter: grayscale(0%) opacity(1);
+/* Forecast tab fish — solid filled SVG. Fill inherits from .nav-tab color
+   so it tints muted when inactive and accent-blue when active, matching
+   the other nav icons' behaviour. The cut-out eye stays #0b1a2b
+   regardless so it reads as a hole in the body. */
+.nav-fish-svg {
+  display: block;
 }
 
 /* ═══════════════ Score arc gauge ═══════════════ */

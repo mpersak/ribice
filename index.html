@@ -244,7 +244,15 @@
       <span>Conditions</span>
     </button>
     <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
-      <span class="nav-fish-emoji" aria-hidden="true">🐟</span>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" class="nav-fish-svg">
+        <!-- Solid fish silhouette. Filled (not stroked) so the shape reads
+             cleanly at 22 px where outlines blur together. V-notched tail
+             on the left, body bulging right, cut-out eye on the head. -->
+        <path d="M 22 12 Q 22 7, 17 5 Q 11 4, 6 7 L 2 4 L 4 12 L 2 20 L 6 17 Q 11 20, 17 19 Q 22 17, 22 12 Z"
+              fill="currentColor"/>
+        <!-- Eye — matches nav background to read as a cutout -->
+        <circle cx="18" cy="10" r="1.1" fill="#0b1a2b"/>
+      </svg>
       <span>Forecast</span>
     </button>
     <button class="nav-tab" data-tab="log" aria-label="Log">
