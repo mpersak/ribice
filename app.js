@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-9";
+const APP_VERSION = "2026.05.22-10";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -788,40 +788,81 @@ function renderAll() {
   renderForTab(state.activeTab || "today");
 }
 
-// Per-tab renderer dispatch. Called from renderAll() (current tab on data
-// arrival) and from setActiveTab (when the user switches to a different tab).
+// Per-tab renderer dispatch. Each render call is wrapped in safeRender so
+// one bad card can't take down the whole tab. The page used to go fully
+// blank on any render exception — this trades a single broken card for an
+// otherwise-working page.
 function renderForTab(tabId) {
-  // Log and Spots don't depend on forecast data — render even before data.
-  if (tabId === "log")   { renderCatchLog(); return; }
-  if (tabId === "spots") { renderSpotsTab(); return; }
-  if (!state.data) return;
+  try {
+    if (tabId === "log")   { safeRender("CatchLog", renderCatchLog); return; }
+    if (tabId === "spots") { safeRender("SpotsTab", renderSpotsTab); return; }
+    if (!state.data) return;
 
-  const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
-  const dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
+    const { spot, hourlyAgg, dailyAgg, marine, air, solunar, solunarTomorrow } = state.data;
+    let dailyScores;
+    try {
+      dailyScores = computeDailyScores(dailyAgg, hourlyAgg, marine, spot);
+    } catch (e) {
+      console.error("computeDailyScores failed:", e);
+      dailyScores = [];
+    }
 
-  if (tabId === "today") {
-    // Slim Today: hero (single rating), warnings strip, bait, week-glance
-    // grid, 48-hour scroll. Bite times moved to Forecast, best-day + 7-day
-    // detail moved to Conditions.
-    renderHero(hourlyAgg, marine, dailyAgg, dailyScores);
-    renderWarnings(hourlyAgg, marine);
-    renderBaitCard(hourlyAgg, marine);
-    renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores);
-    renderHourly(hourlyAgg, marine);
-  } else if (tabId === "conditions") {
-    renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores);
-    renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores);
-    renderTides(marine);
-    renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar);
-    renderSeaTemp(marine);
-    renderWind(hourlyAgg);
-    renderSwell(marine, hourlyAgg);
-    renderXLinks(spot);
-    renderSolunar(spot, dailyAgg, air, solunar);
-    renderAgreement(hourlyAgg);
-  } else if (tabId === "forecast") {
-    renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg);
-    renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar);
+    if (tabId === "today") {
+      safeRender("Hero",     () => renderHero(hourlyAgg, marine, dailyAgg, dailyScores));
+      safeRender("Warnings", () => renderWarnings(hourlyAgg, marine));
+      safeRender("Bait",     () => renderBaitCard(hourlyAgg, marine));
+      safeRender("WeekGrid", () => renderWeekGrid(dailyAgg, hourlyAgg, marine, dailyScores));
+      safeRender("Hourly",   () => renderHourly(hourlyAgg, marine));
+    } else if (tabId === "conditions") {
+      safeRender("BestDay",   () => renderBestDay(dailyAgg, hourlyAgg, marine, spot, dailyScores));
+      safeRender("Daily",     () => renderDaily(dailyAgg, hourlyAgg, marine, spot, dailyScores));
+      safeRender("Tides",     () => renderTides(marine));
+      safeRender("Fishing",   () => renderFishing(marine, hourlyAgg, dailyAgg, spot, solunar));
+      safeRender("SeaTemp",   () => renderSeaTemp(marine));
+      safeRender("Wind",      () => renderWind(hourlyAgg));
+      safeRender("Swell",     () => renderSwell(marine, hourlyAgg));
+      safeRender("XLinks",    () => renderXLinks(spot));
+      safeRender("Solunar",   () => renderSolunar(spot, dailyAgg, air, solunar));
+      safeRender("Agreement", () => renderAgreement(hourlyAgg));
+    } else if (tabId === "forecast") {
+      safeRender("BiteTimes", () => renderBiteTimes(spot, solunar, solunarTomorrow, dailyAgg));
+      safeRender("Catch",     () => renderCatch(spot, hourlyAgg, dailyAgg, marine, solunar));
+    }
+  } catch (e) {
+    console.error("renderForTab dispatcher failed:", e);
+    showFatalError(e);
+  }
+}
+
+// Run a render call inside a try/catch. If it throws, log it but keep the
+// page alive. Pushes a visible toast so you can see something broke without
+// having to open DevTools.
+function safeRender(label, fn) {
+  try {
+    fn();
+  } catch (e) {
+    console.error(`[render:${label}]`, e);
+    toast(`${label} render failed — see console`);
+  }
+}
+
+// Last-resort error UI for when even the dispatcher itself crashes. Replaces
+// the verdict block with an error message + a Force-reload button so the
+// user can recover without having to dig into Settings.
+function showFatalError(e) {
+  const headline = $("#verdictHeadline");
+  const detail = $("#verdictDetail");
+  if (headline) headline.textContent = "Something went wrong";
+  if (detail) {
+    detail.innerHTML = "";
+    const msg = el("span", {}, String(e?.message || e || "Unknown error"));
+    const btn = el("button", {
+      class: "primary-btn",
+      style: "margin-left:8px;",
+      onclick: forceUpdate
+    }, "Force reload");
+    detail.appendChild(msg);
+    detail.appendChild(btn);
   }
 }
 
@@ -3827,10 +3868,47 @@ function renderWindCompass(dirDeg, windKt, gustKt) {
 const _versionPill = document.querySelector("#versionPill");
 if (_versionPill) _versionPill.textContent = "v" + APP_VERSION;
 
-bind();
-bindTabs();
-registerSW();
-refresh();
+// Top-level error visibility — no more silent blank screens. Any uncaught
+// runtime error or unhandled promise rejection drops a red banner at the top
+// of the page with the message + a Force-reload button. So even if a SW is
+// serving a broken cached bundle, you can see WHY it's broken and recover
+// without having to open Chrome DevTools.
+function showGlobalError(msg, source) {
+  let banner = document.getElementById("globalError");
+  if (!banner) {
+    banner = document.createElement("div");
+    banner.id = "globalError";
+    banner.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#ff7a7a;color:#0b1a2b;padding:12px 16px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.4;display:flex;flex-direction:column;gap:8px;box-shadow:0 4px 16px rgba(0,0,0,.4);";
+    document.body.appendChild(banner);
+  }
+  const line = document.createElement("div");
+  line.innerHTML = `<strong>${source || "Error"}:</strong> ${String(msg).slice(0, 200)}`;
+  banner.appendChild(line);
+  // One reload button only (don't multiply them).
+  if (!banner.querySelector("button")) {
+    const btn = document.createElement("button");
+    btn.textContent = "Force reload (wipe cache)";
+    btn.style.cssText = "background:#0b1a2b;color:#fff;border:0;border-radius:6px;padding:8px 14px;font-weight:700;cursor:pointer;align-self:flex-start;font-family:inherit;";
+    btn.onclick = () => {
+      if (typeof forceUpdate === "function") forceUpdate();
+      else location.reload();
+    };
+    banner.appendChild(btn);
+  }
+}
+window.addEventListener("error", (e) => {
+  showGlobalError(`${e.message} (${e.filename?.split("/").pop()}:${e.lineno})`, "JS error");
+});
+window.addEventListener("unhandledrejection", (e) => {
+  showGlobalError(e.reason?.message || String(e.reason), "Promise rejection");
+});
+
+// Wrap bootstrap so any of these crashing surfaces a recoverable error
+// instead of leaving the user staring at "Reading the sky…" forever.
+try { bind();        } catch (e) { showGlobalError(e.message, "bind"); }
+try { bindTabs();    } catch (e) { showGlobalError(e.message, "bindTabs"); }
+try { registerSW();  } catch (e) { showGlobalError(e.message, "registerSW"); }
+try { refresh();     } catch (e) { showGlobalError(e.message, "refresh"); }
 
 // Refresh every 30 min while open.
 setInterval(refresh, 30 * 60 * 1000);
