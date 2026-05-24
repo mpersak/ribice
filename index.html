@@ -244,19 +244,20 @@
       <span>Conditions</span>
     </button>
     <button class="nav-tab" data-tab="forecast" aria-label="Forecast">
-      <!-- Diagnosed v23: FA fish renders beautifully at 300×180 but its
-           tail occupies only the leftmost 5% of the 576-wide path. At our
-           28px width the tail becomes ~1.4px (sub-pixel, invisible) so
-           the user only sees the body — looks like a "D" or half-moon.
-           Fix: hand-rolled fish where the tail is 11/28 ≈ 40% of width,
-           guaranteed to survive the small render. Drawn at native size
-           (1 viewBox unit = 1 px) so nothing scales away. -->
+      <!-- Diagnosed v24: my "tail triangle" had its WIDE BASE on the left
+           (vertical edge from (1,2) to (1,16)) and POINT on the right.
+           Combined with the bulging body, the silhouette was flat-left +
+           round-right = D shape, exactly what the user kept seeing.
+           Fix: forked tail — point on the right (body attachment), two
+           lobes spreading outward to the LEFT with a notch between them.
+           Now the left edge has actual tail-shaped features, not a
+           straight line. -->
       <svg viewBox="0 0 28 18" width="28" height="18" aria-hidden="true" class="nav-fish-svg">
-        <!-- Tail: bold left-pointing triangle, 11 units wide × 14 tall -->
-        <path d="M 1 2 L 12 9 L 1 16 Z" fill="currentColor"/>
-        <!-- Body: ellipse, 18 wide × 12 tall, overlaps tail at x=9-12 -->
+        <!-- Forked tail: M body-attach → top lobe tip → notch → bottom lobe tip → close -->
+        <path d="M 12 9 L 1 2 L 5 9 L 1 16 Z" fill="currentColor"/>
+        <!-- Body ellipse, overlaps tail's right point so they fuse -->
         <ellipse cx="18" cy="9" rx="9" ry="6" fill="currentColor"/>
-        <!-- Eye: cut-out on head, matches nav bg colour -->
+        <!-- Eye cut-out on head, matches nav bg colour -->
         <circle cx="22" cy="7" r="1.2" fill="#0b1a2b"/>
       </svg>
       <span>Forecast</span>
