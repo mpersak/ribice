@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-35";
+const APP_VERSION = "2026.05.30-36";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -842,6 +842,26 @@ function renderSpotPicker() {
     onclick: useGPS
   }, "📍 Use my location");
   wrap.appendChild(gps);
+}
+
+// Pick the closest non-GPS (sea/fishing) spot to a given lat/lon. Used so that
+// "Use my location" anchors the FORECAST to a real sea spot near you rather
+// than your inland GPS point — you fish at sea, not at your house, and the
+// marine APIs (tides/waves/swell) return nothing for an inland coordinate.
+// Returns null only if there are no sea spots at all (DEFAULT_SPOTS seeds them).
+function nearestSeaSpot(lat, lon) {
+  let best = null;
+  let bestD = Infinity;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
+  for (const s of state.spots) {
+    if (s.id === "__gps__") continue;
+    // Equirectangular approximation — plenty accurate at these distances.
+    const dLat = s.lat - lat;
+    const dLon = (s.lon - lon) * cosLat;
+    const d = dLat * dLat + dLon * dLon;
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
 }
 
 function useGPS() {
@@ -3283,8 +3303,24 @@ async function refresh() {
   await maybeRefreshGPS();
 
   renderSpotPicker();
-  const spot = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
-  if (!spot) return;
+  const active = state.spots.find((s) => s.id === state.activeSpotId) || state.spots[0];
+  if (!active) return;
+
+  // For the GPS spot the FISHING data (forecast, marine, tides, solunar) should
+  // come from the nearest SEA spot, not your inland GPS point — that point has
+  // no tides/waves and reads inland air, which is why it "looked different" from
+  // a named spot like Auckland (Waitemata). We keep the raw GPS coords only to
+  // sample your *local* air temperature for the "Now" tile, so the temperature
+  // still matches what you actually feel where you are.
+  let spot = active;        // where forecast / marine / solunar are sampled
+  let localSpot = null;     // raw GPS coords, used for the local "Now" temp only
+  if (active.id === "__gps__") {
+    const sea = nearestSeaSpot(active.lat, active.lon);
+    if (sea) {
+      spot = { id: "__gps__", name: `My location · ${sea.name}`, lat: sea.lat, lon: sea.lon };
+      localSpot = { lat: active.lat, lon: active.lon };
+    }
+  }
   $("#spotName").textContent = spot.name;
 
   // Stale-while-revalidate: if we have a recent snapshot for this spot,
@@ -3307,12 +3343,26 @@ async function refresh() {
     // NOTE: api.solunar.org is CORS-blocked for browsers — calls always fail.
     // We rely on the local astronomy calculation (solunarWindows) instead. If
     // we ever add a Netlify function to proxy solunar.org, re-enable here.
-    const [forecast, marine, air, current] = await Promise.all([
+    const [forecast, marine, air, seaCurrent, localCurrent] = await Promise.all([
       fetchForecast(spot),
       fetchMarine(spot),
       fetchAir(spot),
-      fetchCurrent(spot)
+      fetchCurrent(spot),
+      // Local air temp at the raw GPS point (only when using "My location").
+      localSpot ? fetchCurrent(localSpot) : Promise.resolve(null)
     ]);
+    // Conditions (wind, pressure, sky, rain) come from the sea spot; only the
+    // air temperature + "feels like" are overridden with your local reading.
+    let current = seaCurrent;
+    if (seaCurrent && localCurrent) {
+      current = {
+        ...seaCurrent,
+        temperature_2m: localCurrent.temperature_2m ?? seaCurrent.temperature_2m,
+        apparent_temperature: localCurrent.apparent_temperature ?? seaCurrent.apparent_temperature
+      };
+    } else if (!seaCurrent && localCurrent) {
+      current = localCurrent;
+    }
     const agg = aggregateMultiModel(forecast);
     if (!agg) throw new Error("No forecast data");
     const fresh = {
