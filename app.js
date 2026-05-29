@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-31";
+const APP_VERSION = "2026.05.22-32";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -3614,6 +3614,14 @@ function registerSW() {
 
       // Background-check for updates once an hour while the app is open.
       setInterval(() => reg.update().catch(() => {}), 60 * 60 * 1000);
+
+      // Critical for installed PWAs: the hourly timer above is frozen while the
+      // app is backgrounded/closed, so reopening it never re-checked for a new
+      // version. Check every time the app becomes visible again — this is what
+      // makes "reopen the app → see the update prompt" actually work.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") reg.update().catch(() => {});
+      });
     } catch (err) {
       console.warn("Service worker registration failed:", err);
     }

@@ -1,5 +1,5 @@
 // Bump this whenever you ship app shell changes you want to force-evict.
-const CACHE_VERSION = "v31";
+const CACHE_VERSION = "v32";
 const SHELL_CACHE = `shell-${CACHE_VERSION}`;
 const DATA_CACHE = `data-${CACHE_VERSION}`;
 
@@ -19,9 +19,23 @@ const SHELL_FILES = [
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_FILES))
+    caches.open(SHELL_CACHE).then((cache) =>
+      // Cache each file individually. cache.addAll() rejects the WHOLE install
+      // if any single file 404s or errors — which silently prevents the app
+      // from ever updating. Per-file .catch() keeps a flaky asset from
+      // bricking the update.
+      Promise.all(
+        SHELL_FILES.map((f) =>
+          cache.add(f).catch((err) => console.warn("[SW] skip caching", f, err))
+        )
+      )
+    )
   );
-  self.skipWaiting();
+  // NOTE: deliberately NOT calling self.skipWaiting() here. We want the new
+  // SW to sit in the "waiting" state so the page can detect it (reg.waiting),
+  // show the "New version available" toast, and let the user (or the toast's
+  // 1.5s fallback) trigger activation via the SKIP_WAITING message above.
+  // Calling skipWaiting() on install emptied reg.waiting and broke that flow.
 });
 
 self.addEventListener("activate", (event) => {
