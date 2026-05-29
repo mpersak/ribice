@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-32";
+const APP_VERSION = "2026.05.22-33";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2267,11 +2267,15 @@ function renderXLinks(spot) {
 }
 
 function renderHero(h, marine, daily, dailyScores, boatingScores) {
-  // Pick the upcoming hour.
+  // Pick the hour we're currently IN (not the upcoming one). The "Now" tile is
+  // labelled "Now", so it should show the current clock hour's value, not the
+  // next hour's forecast. Use the latest hour whose start time is <= now;
+  // fall back to the first hour if we're before the data window.
   const now = Date.now();
   let idx = 0;
   for (let i = 0; i < h.time.length; i++) {
-    if (new Date(h.time[i]).getTime() >= now - 30 * 60 * 1000) { idx = i; break; }
+    if (new Date(h.time[i]).getTime() <= now) idx = i;
+    else break;
   }
   const cur = sliceHour(h, idx);
   const mIdx = marine ? indexAtTime(marine.hourly.time, h.time[idx]) : -1;
