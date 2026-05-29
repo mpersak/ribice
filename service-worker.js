@@ -1,5 +1,5 @@
 // Bump this whenever you ship app shell changes you want to force-evict.
-const CACHE_VERSION = "v27";
+const CACHE_VERSION = "v28";
 const SHELL_CACHE = `shell-${CACHE_VERSION}`;
 const DATA_CACHE = `data-${CACHE_VERSION}`;
 

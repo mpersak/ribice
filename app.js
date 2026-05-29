@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-28";
+const APP_VERSION = "2026.05.22-29";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -3655,10 +3655,26 @@ function showUpdateAvailable(reg) {
     el("button", {
       class: "toast-btn",
       onclick: () => {
-        // Tell the waiting SW to take over; controllerchange handler reloads.
+        // Strategy:
+        //   1. Politely ask the waiting SW to skip-waiting.
+        //   2. If controllerchange fires within 1.5s, the global listener
+        //      reloads us — great.
+        //   3. If not (common in installed PWA standalone mode where
+        //      controllerchange events go missing), force a hard reload
+        //      with a cache-busting query so the next launch picks up
+        //      the new shell regardless of which SW happens to be live.
+        console.log("[SW] Reload button clicked");
         const waiting = reg.waiting || reg.installing;
-        if (waiting) waiting.postMessage("SKIP_WAITING");
-        else location.reload();
+        if (waiting) {
+          console.log("[SW] Posting SKIP_WAITING to waiting SW");
+          try { waiting.postMessage("SKIP_WAITING"); } catch (e) { console.warn(e); }
+        }
+        // Fallback: if controllerchange doesn't navigate us in 1.5s,
+        // do it ourselves. Belt-and-braces.
+        setTimeout(() => {
+          console.log("[SW] Fallback reload");
+          location.replace(location.pathname + "?u=" + Date.now());
+        }, 1500);
       }
     }, "Reload")
   );
@@ -3667,23 +3683,48 @@ function showUpdateAvailable(reg) {
 }
 
 // Nuclear option: unregister all SWs, clear all caches, hard reload.
+//
+// Hard mode for installed PWAs: even after unregister + caches.delete, an
+// "almost-dead" SW can still intercept the very next fetch and serve the
+// stale shell. We have to (a) walk OUT of any SW scope by navigating to
+// a URL with a query string the SW has never seen, AND (b) use an absolute
+// URL with the current host so we re-enter through a clean fetch path.
 async function forceUpdate() {
   if (!confirm("Wipe cached app shell and reload? Your saved spots / thresholds will be kept.")) return;
+  console.log("[SW] forceUpdate starting");
   toast("Clearing cache…");
   try {
+    // Unregister every SW registration first so they can't intercept
+    // the post-reload fetches.
     if ("serviceWorker" in navigator) {
       const regs = await navigator.serviceWorker.getRegistrations();
+      console.log("[SW] Unregistering", regs.length, "registration(s)");
       await Promise.all(regs.map((r) => r.unregister()));
     }
+    // Now wipe every cache the app might have written.
     if (window.caches) {
       const keys = await caches.keys();
+      console.log("[SW] Deleting caches:", keys);
       await Promise.all(keys.map((k) => caches.delete(k)));
     }
+    // Wipe the app's own snapshot cache too — the SW caches the shell,
+    // the app caches the forecast. Both need to go for a clean slate.
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith("ts.fc."))
+        .forEach((k) => localStorage.removeItem(k));
+    } catch {}
   } catch (err) {
-    console.warn("Force update — clear failed:", err);
+    console.warn("[SW] Force update — clear failed:", err);
   }
-  // Cache-busting reload that bypasses HTTP cache.
-  location.replace(location.pathname + "?_=" + Date.now());
+  // Aggressive reload: full absolute URL with a query the SW has never
+  // cached, using location.href so the request goes through a fresh
+  // browser-level fetch (not history.replaceState which can be SW-scoped).
+  const url = location.origin + location.pathname + "?fu=" + Date.now();
+  console.log("[SW] Navigating to", url);
+  // Use location.href — most reliable across PWA contexts. location.replace
+  // and location.reload have both been known to fail under installed PWA.
+  window.location.href = url;
 }
 
 // ---------- Tab routing ----------
