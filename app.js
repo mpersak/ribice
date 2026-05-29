@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-29";
+const APP_VERSION = "2026.05.22-30";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -468,6 +468,10 @@ function aggregateMultiModel(json) {
       if (Array.isArray(hourly[key])) perModel[m] = hourly[key];
     }
     const isDir = v === "wind_direction_10m";
+    // weather_code is categorical (a WMO enum), not a quantity. Averaging it
+    // produces meaningless values like 42 that aren't real codes — which then
+    // render as a bare "•" dot. Use the modal (most common) code instead.
+    const isCode = v === "weather_code";
     const meanArr = new Array(N);
     const minArr = new Array(N);
     const maxArr = new Array(N);
@@ -475,6 +479,9 @@ function aggregateMultiModel(json) {
       const vals = Object.values(perModel).map((a) => a[i]).filter((x) => typeof x === "number");
       if (!vals.length) {
         meanArr[i] = null; minArr[i] = null; maxArr[i] = null;
+      } else if (isCode) {
+        meanArr[i] = mode(vals);
+        minArr[i] = null; maxArr[i] = null;
       } else if (isDir) {
         meanArr[i] = circularMean(vals);
         minArr[i] = null; maxArr[i] = null;
@@ -651,9 +658,13 @@ const WMO = {
   3: ["☁️", "Overcast"],
   45: ["🌫️", "Fog"], 48: ["🌫️", "Rime fog"],
   51: ["🌦️", "Light drizzle"], 53: ["🌦️", "Drizzle"], 55: ["🌦️", "Heavy drizzle"],
+  56: ["🌧️", "Freezing drizzle"], 57: ["🌧️", "Freezing drizzle"],
   61: ["🌧️", "Light rain"], 63: ["🌧️", "Rain"], 65: ["🌧️", "Heavy rain"],
+  66: ["🌧️", "Freezing rain"], 67: ["🌧️", "Freezing rain"],
   71: ["🌨️", "Light snow"], 73: ["🌨️", "Snow"], 75: ["❄️", "Heavy snow"],
+  77: ["🌨️", "Snow grains"],
   80: ["🌦️", "Showers"], 81: ["🌧️", "Showers"], 82: ["⛈️", "Heavy showers"],
+  85: ["🌨️", "Snow showers"], 86: ["🌨️", "Snow showers"],
   95: ["⛈️", "Thunderstorm"], 96: ["⛈️", "Storm + hail"], 99: ["⛈️", "Severe storm"]
 };
 function wmo(code) { return WMO[code] || ["•", "—"]; }
