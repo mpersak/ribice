@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-33";
+const APP_VERSION = "2026.05.22-34";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -178,7 +178,7 @@ const state = {
   spots: loadJSON("spots", DEFAULT_SPOTS),
   thresholds: loadJSON("thresholds", DEFAULT_THRESHOLDS),
   units: loadJSON("units", DEFAULT_UNITS),
-  activeSpotId: loadJSON("activeSpotId", DEFAULT_SPOTS[0].id),
+  activeSpotId: loadJSON("activeSpotId", "__gps__"),
   activeSpecies: loadJSON("activeSpecies", null),
   activeTab: loadJSON("activeTab", "today"),
   catches: loadJSON("catches", []),
@@ -195,6 +195,16 @@ const state = {
   }
   saveJSON("spots", state.spots);
   localStorage.setItem("ts.spotsVersion", SPOTS_VERSION);
+})();
+
+// One-time switch to GPS-as-default. Existing installs had a sea spot saved as
+// the active spot; the app should open on the user's actual location instead.
+// Runs once, then never clobbers a deliberate spot choice again.
+(function migrateToGpsDefault() {
+  if (localStorage.getItem("ts.gpsDefaultV1")) return;
+  state.activeSpotId = "__gps__";
+  saveJSON("activeSpotId", "__gps__");
+  localStorage.setItem("ts.gpsDefaultV1", "1");
 })();
 
 // ---------- Utilities ----------
@@ -326,6 +336,29 @@ async function fetchForecast(spot) {
   const r = await fetch(`${base}?${params}`);
   if (!r.ok) throw new Error("Forecast fetch failed: " + r.status);
   return r.json();
+}
+
+// Live "current conditions" reading. Deliberately omits the models= param so
+// Open-Meteo returns its blended best-estimate for *right now* (a 15-min
+// interval value that folds in recent analysis) rather than the top-of-hour
+// ensemble forecast. This is the genuine current observation, not a prediction.
+async function fetchCurrent(spot) {
+  const base = "https://api.open-meteo.com/v1/forecast";
+  const params = new URLSearchParams({
+    latitude: spot.lat,
+    longitude: spot.lon,
+    current: "temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,pressure_msl,precipitation",
+    timezone: "Pacific/Auckland",
+    wind_speed_unit: "kmh"
+  });
+  try {
+    const r = await fetch(`${base}?${params}`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    return j.current || null;
+  } catch {
+    return null;
+  }
 }
 
 async function fetchMarine(spot) {
@@ -847,7 +880,7 @@ async function maybeRefreshGPS() {
     const pos = await new Promise((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(resolve, reject, {
         enableHighAccuracy: false,
-        timeout: 4000,
+        timeout: 8000,             // give the first-ever permission prompt time to be answered
         maximumAge: 5 * 60 * 1000  // accept up to 5 min stale to avoid waiting
       });
     });
@@ -2281,6 +2314,20 @@ function renderHero(h, marine, daily, dailyScores, boatingScores) {
   const mIdx = marine ? indexAtTime(marine.hourly.time, h.time[idx]) : -1;
   const mCur = mIdx >= 0 ? sliceHour(marine.hourly, mIdx) : null;
 
+  // Prefer the live "current conditions" reading (Open-Meteo best-estimate for
+  // right now) over the top-of-hour forecast for the at-a-glance tiles. Falls
+  // back to the current hour's forecast if the live reading is unavailable.
+  const live = state.data?.current || null;
+  const nowCur = live ? {
+    temperature_2m:     live.temperature_2m     ?? cur.temperature_2m,
+    weather_code:       live.weather_code       ?? cur.weather_code,
+    wind_speed_10m:     live.wind_speed_10m      ?? cur.wind_speed_10m,
+    wind_gusts_10m:     live.wind_gusts_10m      ?? cur.wind_gusts_10m,
+    wind_direction_10m: live.wind_direction_10m  ?? cur.wind_direction_10m,
+    pressure_msl:       live.pressure_msl        ?? cur.pressure_msl,
+    precipitation:      live.precipitation       ?? cur.precipitation
+  } : cur;
+
   const sunrise = daily.sunrise?.[0];
   const sunset = daily.sunset?.[0];
   const best = bestWindowToday(h, marine?.hourly, sunrise, sunset);
@@ -2353,7 +2400,7 @@ function renderHero(h, marine, daily, dailyScores, boatingScores) {
   const ill = moonIllumination(moonPhase(new Date()));
   pills.appendChild(el("span", { class: "qpill moon" }, `Moon ${ill}%`));
 
-  const code = cur.weather_code != null ? Math.round(cur.weather_code) : 0;
+  const code = nowCur.weather_code != null ? Math.round(nowCur.weather_code) : 0;
   const [icon, label] = wmo(code);
 
   // Pressure trend (for the pressure tile's sub).
@@ -2372,11 +2419,11 @@ function renderHero(h, marine, daily, dailyScores, boatingScores) {
   const stats = $("#nowStats");
   stats.innerHTML = "";
   stats.append(
-    statTile("Now", `${icon} ${fmtTemp(cur.temperature_2m)}`, label),
-    statTile("Wind", fmtWind(cur.wind_speed_10m), `${compass(cur.wind_direction_10m)} · gust ${fmtWind(cur.wind_gusts_10m)}`),
+    statTile("Now", `${icon} ${fmtTemp(nowCur.temperature_2m)}`, label),
+    statTile("Wind", fmtWind(nowCur.wind_speed_10m), `${compass(nowCur.wind_direction_10m)} · gust ${fmtWind(nowCur.wind_gusts_10m)}`),
     statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
     statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : ""),
-    statTile("Pressure", cur.pressure_msl != null ? `${Math.round(cur.pressure_msl)} hPa` : "—", pressureSub),
+    statTile("Pressure", nowCur.pressure_msl != null ? `${Math.round(nowCur.pressure_msl)} hPa` : "—", pressureSub),
     statTile("UV", uv != null ? String(Math.round(uv)) : "—", uvLabelTile)
   );
 }
@@ -3258,10 +3305,11 @@ async function refresh() {
     // NOTE: api.solunar.org is CORS-blocked for browsers — calls always fail.
     // We rely on the local astronomy calculation (solunarWindows) instead. If
     // we ever add a Netlify function to proxy solunar.org, re-enable here.
-    const [forecast, marine, air] = await Promise.all([
+    const [forecast, marine, air, current] = await Promise.all([
       fetchForecast(spot),
       fetchMarine(spot),
-      fetchAir(spot)
+      fetchAir(spot),
+      fetchCurrent(spot)
     ]);
     const agg = aggregateMultiModel(forecast);
     if (!agg) throw new Error("No forecast data");
@@ -3270,6 +3318,7 @@ async function refresh() {
       dailyAgg: agg.daily,
       marine,
       air,
+      current,
       solunar: null,
       solunarTomorrow: null
     };
