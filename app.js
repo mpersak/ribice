@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-34";
+const APP_VERSION = "2026.05.22-35";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -347,7 +347,7 @@ async function fetchCurrent(spot) {
   const params = new URLSearchParams({
     latitude: spot.lat,
     longitude: spot.lon,
-    current: "temperature_2m,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,pressure_msl,precipitation",
+    current: "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m,wind_direction_10m,pressure_msl,precipitation",
     timezone: "Pacific/Auckland",
     wind_speed_unit: "kmh"
   });
@@ -2319,7 +2319,8 @@ function renderHero(h, marine, daily, dailyScores, boatingScores) {
   // back to the current hour's forecast if the live reading is unavailable.
   const live = state.data?.current || null;
   const nowCur = live ? {
-    temperature_2m:     live.temperature_2m     ?? cur.temperature_2m,
+    temperature_2m:      live.temperature_2m      ?? cur.temperature_2m,
+    apparent_temperature: live.apparent_temperature ?? null,
     weather_code:       live.weather_code       ?? cur.weather_code,
     wind_speed_10m:     live.wind_speed_10m      ?? cur.wind_speed_10m,
     wind_gusts_10m:     live.wind_gusts_10m      ?? cur.wind_gusts_10m,
@@ -2419,7 +2420,8 @@ function renderHero(h, marine, daily, dailyScores, boatingScores) {
   const stats = $("#nowStats");
   stats.innerHTML = "";
   stats.append(
-    statTile("Now", `${icon} ${fmtTemp(nowCur.temperature_2m)}`, label),
+    statTile("Now", `${icon} ${fmtTemp(nowCur.temperature_2m)}`,
+      nowCur.apparent_temperature != null ? `feels ${fmtTemp(nowCur.apparent_temperature)} · ${label}` : label),
     statTile("Wind", fmtWind(nowCur.wind_speed_10m), `${compass(nowCur.wind_direction_10m)} · gust ${fmtWind(nowCur.wind_gusts_10m)}`),
     statTile("Waves", fmtWave(mCur?.wave_height), mCur?.wave_period ? `${mCur.wave_period.toFixed(0)}s · ${compass(mCur.wave_direction)}` : "—"),
     statTile("Sea temp", fmtTemp(mCur?.sea_surface_temperature), mCur?.sea_level_height_msl != null ? `tide ${mCur.sea_level_height_msl >= 0 ? "+" : ""}${mCur.sea_level_height_msl.toFixed(1)}m` : ""),
