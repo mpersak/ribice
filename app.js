@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-30";
+const APP_VERSION = "2026.05.22-31";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2571,38 +2571,9 @@ function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
   }
   wrap.appendChild(rainRow);
 
-  // TIDE row — mini bar showing each day's tidal range as a fraction of the
-  // Auckland spring max (~3.4m). Lets the user see "neap tides" at a glance.
-  const tideRow = el("div", { class: "wg-row" });
-  tideRow.appendChild(el("div", { class: "wg-row-label" }, "TIDE"));
-  for (let d = 0; d < days; d++) {
-    if (marine?.hourly?.sea_level_height_msl) {
-      const dayKey = daily.time[d];
-      const times = marine.hourly.time;
-      const heights = marine.hourly.sea_level_height_msl;
-      const todayH = [];
-      for (let i = 0; i < times.length; i++) {
-        if (times[i].startsWith(dayKey) && heights[i] != null) todayH.push(heights[i]);
-      }
-      if (todayH.length) {
-        const range = Math.max(...todayH) - Math.min(...todayH);
-        // Spring tide ~3.4m, neap ~1.7m for Auckland. Normalise.
-        const pct = Math.max(0, Math.min(1, (range - 1.5) / (3.4 - 1.5)));
-        const color = pct > 0.7 ? "#6fdc8c" : pct > 0.4 ? "#ffd47a" : "#7c97ad";
-        tideRow.appendChild(el("div", { class: "wg-day wg-tide", html: `
-          <svg viewBox="0 0 42 18" preserveAspectRatio="none" aria-label="Tide range ${range.toFixed(1)}m">
-            <rect x="2" y="6" width="38" height="6" rx="2" fill="rgba(255,255,255,0.06)"/>
-            <rect x="2" y="6" width="${(38 * pct).toFixed(1)}" height="6" rx="2" fill="${color}"/>
-            <text x="21" y="17" font-size="8" text-anchor="middle" fill="${color}" font-family="ui-monospace,monospace">${range.toFixed(1)}m</text>
-          </svg>` }));
-      } else {
-        tideRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
-      }
-    } else {
-      tideRow.appendChild(el("div", { class: "wg-day wg-empty" }, "—"));
-    }
-  }
-  wrap.appendChild(tideRow);
+  // (TIDE row removed — a single daily tidal-range bar wasn't actionable;
+  // tide detail lives on Conditions → Tides & flow, which shows actual
+  // high/low times and the live flood/ebb indicator.)
 
   // PRESSURE row — single arrow per day based on the day's first-to-last
   // pressure delta. Up = good (front passing), down = bad (front coming).
