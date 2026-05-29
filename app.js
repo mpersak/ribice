@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.30-36";
+const APP_VERSION = "2026.05.30-37";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -3967,19 +3967,25 @@ const LOG_SPECIES = [
   { id: "other",    name: "Other",          maori: "",             color: "#7B8FA1" }
 ];
 
-const NZ_REGS = [
-  { id: "snapper",  name: "Snapper",        maori: "Tāmure",      color: "#FF6B6B", minSize: 30, bag: 9,  bagNote: "per person/day", measure: "total length", note: "Northland/Hauraki Gulf: check regional limits" },
-  { id: "kingfish", name: "Kingfish",       maori: "Haku",        color: "#F5A623", minSize: 75, bag: 3,  bagNote: "per person/day", measure: "total length", note: "Tag & release encouraged for large fish" },
-  { id: "kahawai",  name: "Kahawai",        maori: "Kahawai",     color: "#7BD4F0", minSize: 30, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
-  { id: "trevally", name: "Trevally",       maori: "Araara",      color: "#C77DFF", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
-  { id: "hapuku",   name: "Hāpuku / Groper",maori: "Hāpuku",      color: "#4D96FF", minSize: 40, bag: 3,  bagNote: "combined hāpuku & bass", measure: "total length", note: "" },
-  { id: "tarakihi", name: "Tarakihi",       maori: "Tarakihi",    color: "#FF9F43", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
-  { id: "marlin",   name: "Striped Marlin", maori: "Takeketonga", color: "#00C9A7", minSize: null, bag: 1, bagNote: "per vessel/day", measure: "LJFL", note: "Tag & release strongly encouraged" },
-  { id: "johndory", name: "John Dory",      maori: "Kuparu",      color: "#7B8FA1", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
-  { id: "gurnard",  name: "Gurnard",        maori: "Kumukumu",    color: "#7B8FA1", minSize: 25, bag: 20, bagNote: "per person/day", measure: "total length", note: "" },
-  { id: "bluecod",  name: "Blue Cod",       maori: "Rāwaru",      color: "#7BD4F0", minSize: 33, bag: 20, bagNote: "per person/day", measure: "total length", note: "Varies by region — some areas closed or restricted" },
-  { id: "crayfish", name: "Rock Lobster",   maori: "Kōura",       color: "#FF6B6B", minSize: 54, bag: 6,  bagNote: "per person/day", measure: "tail width",   note: "Berried / soft-shell females must be returned" },
-  { id: "paua",     name: "Pāua",           maori: "Pāua",        color: "#00C9A7", minSize: 125, bag: 10, bagNote: "per person/day", measure: "shell length", note: "Must be prised off underwater, not on rocks" }
+// Auckland & Kermadec Fishery Management Area (FMA 1) — EAST COAST / Hauraki Gulf
+// recreational rules, which is where every spot in DEFAULT_SPOTS sits. The area
+// has a COMBINED daily limit of 20 finfish per person; species below that have
+// no individual sub-limit just count toward that 20 (bagNote says so). Snapper,
+// kingfish and hāpuku/bass have their own caps within the 20. Verified against
+// mpi.govt.nz Auckland & Kermadec fishing rules (May 2026).
+const AKL_REGS = [
+  { id: "snapper",  name: "Snapper",        maori: "Tāmure",      color: "#FF6B6B", minSize: 30, bag: 7,  bagNote: "within combined 20", measure: "total length", note: "East coast / Hauraki Gulf. West coast (Manukau): 27 cm, 10/day." },
+  { id: "kingfish", name: "Kingfish",       maori: "Haku",        color: "#F5A623", minSize: 75, bag: 3,  bagNote: "within combined 20", measure: "total length", note: "Tag & release encouraged for large fish" },
+  { id: "kahawai",  name: "Kahawai",        maori: "Kahawai",     color: "#7BD4F0", minSize: null, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "No minimum legal size" },
+  { id: "trevally", name: "Trevally",       maori: "Araara",      color: "#C77DFF", minSize: 25, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "" },
+  { id: "hapuku",   name: "Hāpuku / Groper",maori: "Hāpuku",      color: "#4D96FF", minSize: null, bag: 5, bagNote: "hāpuku & bass combined", measure: "total length", note: "No minimum size · max 3 may be bass" },
+  { id: "tarakihi", name: "Tarakihi",       maori: "Tarakihi",    color: "#FF9F43", minSize: 25, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "" },
+  { id: "marlin",   name: "Striped Marlin", maori: "Takeketonga", color: "#00C9A7", minSize: null, bag: 1, bagNote: "per person/day", measure: "LJFL", note: "Gamefish (not in the 20) — tag & release strongly encouraged" },
+  { id: "johndory", name: "John Dory",      maori: "Kuparu",      color: "#7B8FA1", minSize: null, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "No minimum legal size" },
+  { id: "gurnard",  name: "Red Gurnard",    maori: "Kumukumu",    color: "#7B8FA1", minSize: null, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "No minimum legal size" },
+  { id: "bluecod",  name: "Blue Cod",       maori: "Rāwaru",      color: "#7BD4F0", minSize: 33, bag: 20, bagNote: "part of combined 20", measure: "total length", note: "" },
+  { id: "crayfish", name: "Rock Lobster",   maori: "Kōura",       color: "#FF6B6B", minSize: 54, bag: 6,  bagNote: "per person/day", measure: "tail width",   note: "Male 54 mm / female 60 mm tail width · berried or soft-shell females must be returned" },
+  { id: "paua",     name: "Pāua",           maori: "Pāua",        color: "#00C9A7", minSize: 125, bag: 10, bagNote: "per person/day", measure: "shell length", note: "Prise off underwater, not on rocks" }
 ];
 
 state._logFilter = "all";
@@ -4350,7 +4356,7 @@ function saveCatch(ev) {
 function openRegsDialog() {
   const wrap = $("#regsList");
   wrap.innerHTML = "";
-  for (const r of NZ_REGS) {
+  for (const r of AKL_REGS) {
     const unitTxt = r.measure === "tail width" ? "mm tail" :
                     r.measure === "shell length" ? "mm" :
                     r.measure === "LJFL" ? "cm LJFL" : "cm";
