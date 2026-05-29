@@ -4,7 +4,7 @@
 // Bump on every shippable change. Visible in the topbar pill AND in
 // Settings → App version, so you can instantly tell whether the phone is
 // running the latest deploy.
-const APP_VERSION = "2026.05.22-27";
+const APP_VERSION = "2026.05.22-28";
 const LOADED_AT = new Date();
 
 // Diagnostic log — visible in Chrome DevTools when remote-debugging via USB.
@@ -2548,6 +2548,18 @@ function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
   }
   wrap.appendChild(wxRow);
 
+  // RAIN row — per-day total mm above a tiny bar showing when through the
+  // day rain falls. Hourly precip and daily totals are both already
+  // averaged across all 5 weather models in aggregateMultiModel, so what
+  // we render here is the ensemble mean (same as the BOAT/FISH inputs).
+  const rainRow = el("div", { class: "wg-row" });
+  rainRow.appendChild(el("div", { class: "wg-row-label" }, "RAIN"));
+  for (let d = 0; d < days; d++) {
+    const total = daily.precipitation_sum?.[d];
+    rainRow.appendChild(buildRainCell(hourly, daily.time[d], total));
+  }
+  wrap.appendChild(rainRow);
+
   // TIDE row — mini bar showing each day's tidal range as a fraction of the
   // Auckland spring max (~3.4m). Lets the user see "neap tides" at a glance.
   const tideRow = el("div", { class: "wg-row" });
@@ -2646,6 +2658,49 @@ function renderWeekGrid(daily, hourly, marine, dailyScores, boatingScores) {
 // bar always means "approaching your limit" — keeps the visualization
 // honest with the score. (Previously hardcoded 12/22 kt cutoffs disagreed
 // with the user's 15 kt threshold — a green-scoring day showed amber bars.)
+// Rain cell — small horizontal bar showing when through the day rain falls
+// (6 chunks of 4h, same as wind/swell sparklines), plus the daily total in
+// mm under it. Different from weekBarCell because rain colour scheme isn't
+// "good/bad against threshold" — it's just an informational blue, with
+// height proportional to mm/hour capped at 3 mm/h.
+function buildRainCell(hourly, dayKey, totalMm) {
+  const times = hourly.time;
+  const vals = hourly.precipitation || [];
+  const buckets = [[], [], [], [], [], []];
+  for (let i = 0; i < times.length; i++) {
+    if (!times[i].startsWith(dayKey)) continue;
+    if (vals[i] == null) continue;
+    const hr = new Date(times[i]).getHours();
+    const b = Math.floor(hr / 4);
+    if (b >= 0 && b < 6) buckets[b].push(vals[i]);
+  }
+  const W = 42, H = 14;
+  const barW = (W / 6) - 1;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" class="wg-bars" preserveAspectRatio="none" aria-hidden="true">`;
+  let hasAnyRain = false;
+  for (let b = 0; b < 6; b++) {
+    if (!buckets[b].length) continue;
+    const peak = Math.max(...buckets[b]);
+    if (peak <= 0.05) continue;
+    hasAnyRain = true;
+    // Visual height: cap at 3 mm/h so even a normal shower fills the bar.
+    const h = Math.max(2, Math.min(H, (peak / 3) * H));
+    const x = b * (W / 6);
+    // Intensity colour — light blue for drizzle, deeper for actual rain.
+    const color = peak < 0.5 ? "#9ed6f0" : peak < 2 ? "#5ba8d4" : "#3a7eb0";
+    svg += `<rect x="${x.toFixed(1)}" y="${(H - h).toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}" rx="1"/>`;
+  }
+  svg += `</svg>`;
+  const totalText = totalMm == null ? "—"
+                  : totalMm < 0.1 ? "0"
+                  : totalMm < 1 ? totalMm.toFixed(1)
+                  : Math.round(totalMm).toString();
+  return el("div", { class: "wg-day wg-rain" + (hasAnyRain ? "" : " dry") }, [
+    el("div", { class: "wg-rain-bars", html: svg }),
+    el("div", { class: "wg-rain-total" }, totalText)
+  ]);
+}
+
 function weekBarCell(hourlyData, dayKey, field, maxVal, kind, convert) {
   const times = hourlyData.time;
   const vals = hourlyData[field];

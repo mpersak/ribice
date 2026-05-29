@@ -1735,6 +1735,25 @@ dialog.sheet::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(
 .wg-temp .hi { color: var(--accent-2); font-weight: 600; }
 .wg-temp .lo { color: var(--accent); font-weight: 500; opacity: 0.85; }
 .wg-wx { font-size: 18px; line-height: 1; }
+
+/* Rain row — sparkline bars on top, daily total mm underneath */
+.wg-rain {
+  flex-direction: column;
+  gap: 0;
+  align-items: stretch;
+  padding: 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.wg-rain .wg-rain-bars svg { display: block; width: 100%; height: 14px; }
+.wg-rain .wg-rain-total {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  text-align: center;
+  line-height: 1.1;
+  margin-top: 1px;
+}
+.wg-rain.dry .wg-rain-total { color: var(--muted); font-weight: 500; opacity: 0.6; }
 .wg-score-badge {
   display: inline-block;
   min-width: 30px;
